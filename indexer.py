@@ -1,42 +1,65 @@
 #!/usr/bin/env python3
 """
-Recipe Indexer with TF-IDF and BM25 retrieval metrics
+Recipe Indexer with TF-IDF Retrieval
 
-This module builds a primitive inverted index over recipe data from raw HTML files,
-extracting recipe title, ingredients, method, and chef name. It implements two
-retrieval metrics: TF-IDF with cosine similarity and BM25 (Okapi).
+This module builds an inverted index over recipe data from raw HTML files,
+extracting recipe title, ingredients, method, and chef name. It implements
+TF-IDF scoring for recipe search functionality.
 """
 
 import json
 import re
-import math
 import pickle
 from collections import defaultdict, Counter
-from typing import Dict, List, Tuple, Set, Optional
+from typing import Dict, List, Set, Optional
 import logging
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 class RecipeDocument:
-    """Represents a recipe document with its metadata and content"""
+    """
+    Represents a recipe document with its metadata and content.
     
-    def __init__(self, doc_id: str, title: str, ingredients: List[str], 
+    Attributes:
+        title (str): Recipe title
+        ingredients (List[str]): List of ingredients
+        method (str): Cooking method/instructions
+        chef_name (str): Chef or author name
+        url (str): Recipe URL
+        prep_time (str): Preparation time
+        description (str): Combined text for backward compatibility
+    """
+    
+    def __init__(self, title: str, ingredients: List[str], 
                  method: str, chef_name: str = None, url: str = None,
                  prep_time: str = None):
-        self.doc_id = doc_id
+        """
+        Initialize a recipe document.
+        
+        Args:
+            title: Recipe title
+            ingredients: List of ingredients
+            method: Cooking method/instructions
+            chef_name: Chef or author name (optional)
+            url: Recipe URL (optional)
+            prep_time: Preparation time (optional)
+        """
         self.title = title
         self.ingredients = ingredients
         self.method = method
         self.chef_name = chef_name or "Unknown"
         self.url = url
         self.prep_time = prep_time or "Not specified"
-        
-        # Combine all text for indexing
         self.description = self._combine_text()
         
     def _combine_text(self) -> str:
-        """Combine all recipe components into a single text for indexing"""
+        """
+        Combine all recipe components into a single text for indexing.
+        
+        Returns:
+            str: Combined text from all recipe fields
+        """
         text_parts = [self.title]
         text_parts.extend(self.ingredients)
         text_parts.append(self.method)
@@ -45,11 +68,27 @@ class RecipeDocument:
         
         return " ".join(filter(None, text_parts))
     
+    def get_tf_text(self) -> str:
+        """
+        Combine title, ingredients, and method for TF calculation.
+        
+        Returns:
+            str: Combined text for term frequency calculation
+        """
+        text_parts = [self.title]
+        text_parts.extend(self.ingredients)
+        text_parts.append(self.method)
+        
+        return " ".join(filter(None, text_parts))
+    
     def to_dict(self) -> Dict:
-        """Convert document to dictionary for serialization"""
+        """
+        Convert document to dictionary for serialization.
+        
+        Returns:
+            dict: Document data as dictionary
+        """
         return {
-            'doc_id': self.doc_id,
-            'title': self.title,
             'ingredients': self.ingredients,
             'method': self.method,
             'chef_name': self.chef_name,
@@ -59,10 +98,11 @@ class RecipeDocument:
         }
 
 class TextProcessor:
-    """Handles text preprocessing for indexing using regex only"""
+    """Handles text preprocessing for indexing using regex-based operations."""
     
     def __init__(self):
-        # Define stop words manually
+        """Initialize text processor with stop words."""
+        # Common English stop words plus cooking-specific terms
         self.stop_words = {
             'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
             'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
@@ -72,7 +112,7 @@ class TextProcessor:
             'some', 'her', 'would', 'make', 'like', 'into', 'him', 'time', 'two',
             'more', 'very', 'when', 'come', 'may', 'use', 'than', 'first',
             'been', 'one', 'now', 'find', 'way', 'who', 'oil', 'water', 'can',
-            'could', 'should', 'other', 'after', 'first', 'well', 'get', 'here',
+            'could', 'should', 'other', 'after', 'well', 'get', 'here',
             'all', 'new', 'just', 'see', 'only', 'know', 'take', 'also', 'back',
             'good', 'give', 'most', 'over', 'think', 'where', 'much', 'go', 'work',
             # Cooking-specific stop words
@@ -85,20 +125,26 @@ class TextProcessor:
         }
     
     def simple_stem(self, word: str) -> str:
-        """Simple stemming using regex patterns"""
+        """
+        Apply simple stemming rules to a word.
+        
+        Args:
+            word: Word to stem
+            
+        Returns:
+            str: Stemmed word
+        """
         word = word.lower()
         
-        # Remove common suffixes
+        # Apply common suffix removal rules
         if word.endswith('ing') and len(word) > 5:
             word = word[:-3]
         elif word.endswith('ed') and len(word) > 4:
             word = word[:-2]
-        elif word.endswith('er') and len(word) > 4:
-            word = word[:-2]
         elif word.endswith('est') and len(word) > 5:
             word = word[:-3]
         elif word.endswith('ly') and len(word) > 4:
-            word = word[:-2]
+            word = word[:-2] + 'e'
         elif word.endswith('ies') and len(word) > 5:
             word = word[:-3] + 'y'
         elif word.endswith('s') and len(word) > 3 and not word.endswith('ss'):
@@ -108,39 +154,35 @@ class TextProcessor:
     
     def preprocess_text(self, text: str) -> List[str]:
         """
-        Preprocess text: tokenize, lowercase, remove stopwords, simple stemming
+        Preprocess text: tokenize, lowercase, remove stopwords, apply stemming.
         
         Args:
             text: Raw text to preprocess
             
         Returns:
-            List of processed tokens
+            list: List of processed tokens
         """
-        # Clean HTML tags if any
+        # Clean HTML tags
         text = re.sub(r'<[^>]+>', ' ', text)
-        
-        # Convert to lowercase
         text = text.lower()
         
-        # Extract words using regex (alphanumeric + common punctuation in food)
+        # Extract alphanumeric words with hyphens and apostrophes
         tokens = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-\']*\b', text)
         
-        # Filter and stem tokens
         processed_tokens = []
         for token in tokens:
-            # Remove tokens that are too short or are stop words
             if len(token) > 2 and token not in self.stop_words:
-                # Simple stemming
                 stemmed = self.simple_stem(token)
-                if len(stemmed) > 2:  # Check length after stemming
+                if len(stemmed) > 2:
                     processed_tokens.append(stemmed)
         
         return processed_tokens
 
 class InvertedIndex:
-    """Inverted index implementation with TF-IDF and BM25 scoring"""
+    """Inverted index implementation with TF scoring capabilities."""
     
     def __init__(self):
+        """Initialize the inverted index."""
         self.documents: Dict[str, RecipeDocument] = {}
         self.term_doc_freq: Dict[str, Set[str]] = defaultdict(set)  # term -> set of doc_ids
         self.doc_term_freq: Dict[str, Dict[str, int]] = defaultdict(dict)  # doc_id -> term -> count
@@ -152,19 +194,23 @@ class InvertedIndex:
         self.processor = TextProcessor()
         
     def add_document(self, document: RecipeDocument):
-        """Add a document to the index"""
-        doc_id = document.doc_id
+        """
+        Add a document to the index.
+        
+        Args:
+            document: RecipeDocument to add to the index
+        """
+        doc_id = document.title
         self.documents[doc_id] = document
         
-        # Preprocess document text
-        tokens = self.processor.preprocess_text(document.description)
+        # Process text for indexing
+        tf_text = document.get_tf_text()
+        tokens = self.processor.preprocess_text(tf_text)
         
-        # Update document length
         self.doc_lengths[doc_id] = len(tokens)
         
-        # Update term frequencies
+        # Update term frequency mappings
         term_counts = Counter(tokens)
-        
         for term, count in term_counts.items():
             self.term_doc_freq[term].add(doc_id)
             if doc_id not in self.doc_term_freq:
@@ -174,7 +220,7 @@ class InvertedIndex:
         self._update_stats()
     
     def _update_stats(self):
-        """Update collection statistics"""
+        """Update collection statistics."""
         self.total_docs = len(self.documents)
         self.vocab_size = len(self.term_doc_freq)
         
@@ -182,35 +228,144 @@ class InvertedIndex:
             self.avg_doc_length = sum(self.doc_lengths.values()) / self.total_docs
     
     def get_document_frequency(self, term: str) -> int:
-        """Get document frequency for a term"""
+        """
+        Get document frequency for a term.
+        
+        Args:
+            term: Term to get document frequency for
+            
+        Returns:
+            int: Number of documents containing the term
+        """
         return len(self.term_doc_freq.get(term, set()))
     
-    def get_term_frequency(self, term: str, doc_id: str) -> int:
-        """Get term frequency in a specific document"""
-        return self.doc_term_freq.get(doc_id, {}).get(term, 0)
+    def get_term_frequency(self, term: str, title: str) -> int:
+        """
+        Get term frequency in a specific document.
         
-    def get_document(self, doc_id: str) -> Optional[RecipeDocument]:
-        """Retrieve a document by ID"""
-        return self.documents.get(doc_id)
+        Args:
+            term: Term to get frequency for
+            title: Document title (used as document ID)
+            
+        Returns:
+            int: Frequency of term in the document
+        """
+        return self.doc_term_freq.get(title, {}).get(term, 0)
+        
+    def get_document(self, title: str) -> Optional[RecipeDocument]:
+        """
+        Retrieve a document by title.
+        
+        Args:
+            title: Document title to retrieve
+            
+        Returns:
+            RecipeDocument or None if not found
+        """
+        return self.documents.get(title)
     
     def get_stats(self) -> Dict:
-        """Get index statistics"""
+        """
+        Get index statistics.
+        
+        Returns:
+            dict: Dictionary containing index statistics
+        """
         return {
             'total_documents': self.total_docs,
             'vocabulary_size': self.vocab_size,
             'average_document_length': self.avg_doc_length
         }
+    
+    def calculate_tf(self, term: str, title: str) -> float:
+        """
+        Calculate normalized term frequency (TF) for a term in a document.
+        TF = (frequency of term in document) / (total number of terms in document)
+        
+        Args:
+            term: The term to calculate TF for
+            title: Recipe title (used as document key)
+            
+        Returns:
+            float: Normalized term frequency
+        """
+        if title not in self.doc_term_freq or title not in self.doc_lengths:
+            return 0.0
+            
+        term_freq = self.get_term_frequency(term, title)
+        doc_length = self.doc_lengths[title]
+        
+        return term_freq / doc_length if doc_length > 0 else 0.0
+    
+    def get_document_tf_vector(self, title: str) -> Dict[str, float]:
+        """
+        Get TF vector for a document (all terms and their TF values).
+        
+        Args:
+            title: Recipe title (used as document key)
+            
+        Returns:
+            dict: Dictionary mapping terms to their TF values
+        """
+        if title not in self.doc_term_freq:
+            return {}
+            
+        doc_terms = self.doc_term_freq[title]
+        doc_length = self.doc_lengths[title]
+        
+        if doc_length == 0:
+            return {}
+            
+        return {term: count / doc_length for term, count in doc_terms.items()}
+    
+    def get_tf_calculation_details(self, title: str) -> Dict:
+        """
+        Get detailed information about TF calculation for a document.
+        
+        Args:
+            title: Recipe title (used as document key)
+            
+        Returns:
+            dict: Dictionary with TF calculation details
+        """
+        if title not in self.documents:
+            return {}
+            
+        document = self.documents[title]
+        tf_text = document.get_tf_text()
+        processed_tokens = self.processor.preprocess_text(tf_text)
+        
+        return {
+            'title': document.title,
+            'tf_text': tf_text,
+            'processed_tokens': processed_tokens,
+            'total_tokens': len(processed_tokens),
+            'unique_terms': len(set(processed_tokens)),
+            'term_frequencies': dict(Counter(processed_tokens)),
+            'tf_vector': self.get_document_tf_vector(title)
+        }
 
 class RecipeIndexer:
-    """Main class for building recipe index from HTML files"""
+    """Main class for building recipe index from HTML files."""
     
     def __init__(self, html_dir: str):
+        """
+        Initialize the recipe indexer.
+        
+        Args:
+            html_dir: Directory containing HTML files to index
+        """
         self.html_dir = Path(html_dir)
         self.index = InvertedIndex()
         self.logger = self._setup_logging()
         
     def _setup_logging(self):
-        """Setup logging configuration"""
+        """
+        Setup logging configuration.
+        
+        Returns:
+            logging.Logger: Configured logger instance
+        """
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -223,165 +378,216 @@ class RecipeIndexer:
     
     def extract_recipe_data(self, html_content: str, filename: str) -> Optional[RecipeDocument]:
         """
-        Extract recipe data from HTML content
+        Extract recipe data from HTML content using JSON-LD structured data.
         
         Args:
-            html_content: Raw HTML content
-            filename: Name of the HTML file (used as doc_id)
+            html_content: Raw HTML content of the recipe page
+            filename: Name of the HTML file for error logging
             
         Returns:
-            RecipeDocument object or None if extraction fails
+            RecipeDocument: Extracted recipe data or None if extraction fails
         """
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Find JSON-LD structured data for recipe
+            # Look for JSON-LD structured recipe data
             recipe_script = soup.find('script', type='application/ld+json', string=re.compile(r'"@type":\s*"Recipe"'))
             
             if recipe_script:
                 recipe_data = json.loads(recipe_script.string)
-                
-                # Extract recipe components
-                title = recipe_data.get('name', '').strip()
-                ingredients = recipe_data.get('recipeIngredient', [])
-                
-                # Clean ingredients list
-                if isinstance(ingredients, list):
-                    ingredients = [ing.strip() for ing in ingredients if ing.strip()]
-                else:
-                    ingredients = []
-                
-                # Extract method/instructions - try JSON-LD first (most reliable), then HTML
-                method = ""
-                
-                # Method 1: Use JSON-LD structured data (preferred)
-                instructions = recipe_data.get('recipeInstructions', '')
-                if isinstance(instructions, list):
-                    # Handle array of instruction objects
-                    method_steps = []
-                    for instruction in instructions:
-                        if isinstance(instruction, dict):
-                            # Get step name and text
-                            step_name = instruction.get('name', '')
-                            step_text = instruction.get('text', '')
-                            if step_name and step_text:
-                                method_steps.append(f"{step_name}: {step_text}")
-                            elif step_text:
-                                method_steps.append(step_text)
-                        else:
-                            text = str(instruction)
-                            if text:
-                                # Remove HTML tags
-                                text = re.sub(r'<[^>]+>', ' ', text)
-                                text = re.sub(r'\s+', ' ', text).strip()
-                                method_steps.append(text)
-                    method = " ".join(method_steps)
-                elif isinstance(instructions, str):
-                    # Remove HTML tags from instructions
-                    method = re.sub(r'<[^>]+>', ' ', instructions)
-                    method = re.sub(r'\s+', ' ', method).strip()
-                
-                # Method 2: Fallback to HTML structure if JSON-LD doesn't provide good method
-                if not method or len(method) < 50:  # If method is too short, try HTML
-                    instructions_divs = soup.find_all('div', class_='mb-6 e-instructions')
-                    if instructions_divs:
-                        method_steps = []
-                        for step_div in instructions_divs:
-                            step_title_elem = step_div.find('h3')
-                            step_content_elem = step_div.find('p')
-                            
-                            if step_title_elem and step_content_elem:
-                                step_title = step_title_elem.get_text().strip()
-                                step_content = step_content_elem.get_text().strip()
-                                
-                                # Format as "Step X: content" ensuring proper step formatting
-                                if step_title.lower().startswith('step '):
-                                    method_steps.append(f"{step_title}: {step_content}")
-                                elif step_title:
-                                    # For things like "Cook's Note:" etc.
-                                    method_steps.append(f"{step_title}: {step_content}")
-                                else:
-                                    method_steps.append(step_content)
-                        
-                        if method_steps:
-                            method = " ".join(method_steps)
-                
-                # Extract chef/author name
-                author = recipe_data.get('author', {})
-                if isinstance(author, dict):
-                    chef_name = author.get('name', 'Unknown')
-                elif isinstance(author, str):
-                    chef_name = author
-                else:
-                    chef_name = 'Unknown'
-                
-                # Get URL if available
-                url = recipe_data.get('url', '')
-                
-                # Extract preparation time
-                prep_time = recipe_data.get('prepTime', '')
-                if prep_time:
-                    # PT150M -> 150 minutes, PT2H30M -> 2 hours 30 minutes
-                    time_match = re.search(r'PT(?:(\d+)H)?(?:(\d+)M)?', prep_time)
-                    if time_match:
-                        hours = int(time_match.group(1)) if time_match.group(1) else 0
-                        minutes = int(time_match.group(2)) if time_match.group(2) else 0
-                        if hours and minutes:
-                            prep_time = f"{hours} hours {minutes} minutes"
-                        elif hours:
-                            prep_time = f"{hours} hours"
-                        elif minutes:
-                            prep_time = f"{minutes} minutes"
-                        else:
-                            prep_time = "Not specified"
-                    else:
-                        prep_time = prep_time if prep_time else "Not specified"
-                else:
-                    prep_time = "Not specified"
-                
-                # Use filename (without extension) as document ID
-                doc_id = Path(filename).stem
-                
-                if title:  # Only create document if we have a title
-                    return RecipeDocument(
-                        doc_id=doc_id,
-                        title=title,
-                        ingredients=ingredients,
-                        method=method,
-                        chef_name=chef_name,
-                        url=url,
-                        prep_time=prep_time
-                    )
+                return self._extract_from_json_ld(recipe_data, soup)
             
-            # Fallback: try to extract from HTML structure
-            title_elem = soup.find('title')
-            if title_elem:
-                title = title_elem.get_text().strip()
-                # Remove common suffixes
-                title = re.sub(r'\s*\|\s*Food Network.*$', '', title, flags=re.IGNORECASE)
-                title = re.sub(r'\s*Recipe\s*$', '', title, flags=re.IGNORECASE)
-                
-                doc_id = Path(filename).stem
-                return RecipeDocument(
-                    doc_id=doc_id,
-                    title=title,
-                    ingredients=[],
-                    method='',
-                    chef_name='Unknown',
-                    prep_time='Not specified'
-                )
+            # Fallback: extract basic info from HTML title
+            return self._extract_fallback(soup)
             
         except Exception as e:
             self.logger.error(f"Error extracting recipe data from {filename}: {e}")
+            return None
+    
+    def _extract_from_json_ld(self, recipe_data: dict, soup) -> Optional[RecipeDocument]:
+        """
+        Extract recipe data from JSON-LD structured data.
         
-        return None
+        Args:
+            recipe_data: Parsed JSON-LD recipe data
+            soup: BeautifulSoup object for fallback HTML parsing
+            
+        Returns:
+            RecipeDocument: Extracted recipe or None
+        """
+        title = recipe_data.get('name', '').strip()
+        if not title:
+            return None
+            
+        # Extract and clean ingredients
+        ingredients = recipe_data.get('recipeIngredient', [])
+        if isinstance(ingredients, list):
+            ingredients = [ing.strip() for ing in ingredients if ing.strip()]
+        else:
+            ingredients = []
+        
+        # Extract cooking method/instructions
+        method = self._extract_method(recipe_data, soup)
+        
+        # Extract author information
+        author = recipe_data.get('author', {})
+        if isinstance(author, dict):
+            chef_name = author.get('name', 'Unknown')
+        elif isinstance(author, str):
+            chef_name = author
+        else:
+            chef_name = 'Unknown'
+        
+        # Extract other metadata
+        url = recipe_data.get('url', '')
+        prep_time = self._parse_prep_time(recipe_data.get('prepTime', ''))
+        
+        return RecipeDocument(
+            title=title,
+            ingredients=ingredients,
+            method=method,
+            chef_name=chef_name,
+            url=url,
+            prep_time=prep_time
+        )
+    
+    def _extract_method(self, recipe_data: dict, soup) -> str:
+        """
+        Extract cooking method from JSON-LD or HTML fallback.
+        
+        Args:
+            recipe_data: JSON-LD recipe data
+            soup: BeautifulSoup object for HTML parsing
+            
+        Returns:
+            str: Cooking method text
+        """
+        instructions = recipe_data.get('recipeInstructions', '')
+        method_steps = []
+        
+        if isinstance(instructions, list):
+            # Process instruction objects/strings
+            for instruction in instructions:
+                if isinstance(instruction, dict):
+                    step_name = instruction.get('name', '')
+                    step_text = instruction.get('text', '')
+                    if step_name and step_text:
+                        method_steps.append(f"{step_name}: {step_text}")
+                    elif step_text:
+                        method_steps.append(step_text)
+                else:
+                    # Clean HTML from text instructions
+                    text = re.sub(r'<[^>]+>', ' ', str(instruction))
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    if text:
+                        method_steps.append(text)
+        elif isinstance(instructions, str):
+            # Clean HTML tags from instruction text
+            method = re.sub(r'<[^>]+>', ' ', instructions)
+            method = re.sub(r'\s+', ' ', method).strip()
+            return method
+        
+        method = " ".join(method_steps)
+        
+        # Fallback to HTML parsing if method is too short
+        if not method or len(method) < 50:
+            method = self._extract_method_from_html(soup)
+        
+        return method
+    
+    def _extract_method_from_html(self, soup) -> str:
+        """
+        Extract cooking method from HTML structure as fallback.
+        
+        Args:
+            soup: BeautifulSoup object
+            
+        Returns:
+            str: Extracted method text
+        """
+        instructions_divs = soup.find_all('div', class_='mb-6 e-instructions')
+        method_steps = []
+        
+        for step_div in instructions_divs:
+            step_title_elem = step_div.find('h3')
+            step_content_elem = step_div.find('p')
+            
+            if step_title_elem and step_content_elem:
+                step_title = step_title_elem.get_text().strip()
+                step_content = step_content_elem.get_text().strip()
+                
+                if step_title.lower().startswith('step '):
+                    method_steps.append(f"{step_title}: {step_content}")
+                elif step_title:
+                    method_steps.append(f"{step_title}: {step_content}")
+                else:
+                    method_steps.append(step_content)
+        
+        return " ".join(method_steps)
+    
+    def _parse_prep_time(self, prep_time_str: str) -> str:
+        """
+        Parse ISO 8601 duration format to human-readable time.
+        
+        Args:
+            prep_time_str: Duration string (e.g., "PT150M", "PT2H30M")
+            
+        Returns:
+            str: Human-readable preparation time
+        """
+        if not prep_time_str:
+            return "Not specified"
+            
+        # Parse ISO 8601 duration: PT150M -> 150 minutes, PT2H30M -> 2 hours 30 minutes
+        time_match = re.search(r'PT(?:(\d+)H)?(?:(\d+)M)?', prep_time_str)
+        if time_match:
+            hours = int(time_match.group(1)) if time_match.group(1) else 0
+            minutes = int(time_match.group(2)) if time_match.group(2) else 0
+            
+            if hours and minutes:
+                return f"{hours} hours {minutes} minutes"
+            elif hours:
+                return f"{hours} hours"
+            elif minutes:
+                return f"{minutes} minutes"
+            else:
+                return "Not specified"
+        
+        return prep_time_str if prep_time_str else "Not specified"
+    
+    def _extract_fallback(self, soup) -> Optional[RecipeDocument]:
+        """
+        Extract basic recipe info from HTML title as fallback.
+        
+        Args:
+            soup: BeautifulSoup object
+            
+        Returns:
+            RecipeDocument: Basic recipe document or None
+        """
+        title_elem = soup.find('title')
+        if not title_elem:
+            return None
+            
+        title = title_elem.get_text().strip()
+        # Clean up title by removing common suffixes
+        title = re.sub(r'\s*\|\s*Food Network.*$', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'\s*Recipe\s*$', '', title, flags=re.IGNORECASE)
+        
+        return RecipeDocument(
+            title=title,
+            ingredients=[],
+            method='',
+            chef_name='Unknown',
+            prep_time='Not specified'
+        )
     
     def build_index(self) -> bool:
         """
-        Build the inverted index from all HTML files in the directory
+        Build the inverted index from all HTML files in the directory.
         
         Returns:
-            True if successful, False otherwise
+            bool: True if successful, False otherwise
         """
         try:
             html_files = list(self.html_dir.glob('*.html'))
@@ -422,9 +628,13 @@ class RecipeIndexer:
             return False
     
     def save_index(self, filename: str = 'data/index/recipe_index.pkl'):
-        """Save the index to a pickle file"""
+        """
+        Save the index to a pickle file.
+        
+        Args:
+            filename: Path to save the index file
+        """
         try:
-            # Ensure directory exists
             Path(filename).parent.mkdir(parents=True, exist_ok=True)
             with open(filename, 'wb') as f:
                 pickle.dump(self.index, f)
@@ -433,7 +643,15 @@ class RecipeIndexer:
             self.logger.error(f"Error saving index: {e}")
     
     def load_index(self, filename: str = 'data/index/recipe_index.pkl') -> bool:
-        """Load an index from a pickle file"""
+        """
+        Load an index from a pickle file.
+        
+        Args:
+            filename: Path to the index file to load
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             with open(filename, 'rb') as f:
                 self.index = pickle.load(f)
@@ -444,16 +662,16 @@ class RecipeIndexer:
             self.logger.error(f"Error loading index: {e}")
             return False
     
-
-    
     def export_documents(self, filename: str = 'data/index/recipe_documents.json'):
-        """Export all documents to JSON for inspection"""
+        """
+        Export all documents to JSON for inspection.
+        
+        Args:
+            filename: Path to save the documents JSON file
+        """
         try:
-            # Ensure directory exists
             Path(filename).parent.mkdir(parents=True, exist_ok=True)
-            docs_dict = {}
-            for doc_id, doc in self.index.documents.items():
-                docs_dict[doc_id] = doc.to_dict()
+            docs_dict = {title: doc.to_dict() for title, doc in self.index.documents.items()}
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(docs_dict, f, indent=2, ensure_ascii=False)
@@ -463,25 +681,19 @@ class RecipeIndexer:
             self.logger.error(f"Error exporting documents: {e}")
     
     def export_fulltext_index(self, filename: str = 'data/index/fulltext_index.json'):
-        """Export a simple fulltext inverted index to JSON (without documents)"""
+        """
+        Export a simple fulltext inverted index to JSON.
+        
+        Args:
+            filename: Path to save the fulltext index JSON file
+        """
         try:
-            # Ensure directory exists
             Path(filename).parent.mkdir(parents=True, exist_ok=True)
             
-            # Create simple inverted index: term -> list of doc_ids
-            fulltext_index = {}
-            for term, doc_ids_set in self.index.term_doc_freq.items():
-                fulltext_index[term] = list(doc_ids_set)
+            # Create inverted index mapping: term -> list of recipe titles
+            fulltext_index = {term: list(titles_set) for term, titles_set in self.index.term_doc_freq.items()}
             
-            # Export index data (without documents - they're in recipe_documents.json)
-            index_data = {
-                'inverted_index': fulltext_index,
-                'stats': {
-                    'total_documents': len(self.index.documents),
-                    'vocabulary_size': len(fulltext_index),
-                    'total_terms': sum(len(doc_ids) for doc_ids in fulltext_index.values())
-                }
-            }
+            index_data = {'inverted_index': fulltext_index}
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(index_data, f, indent=2, ensure_ascii=False)
@@ -493,29 +705,25 @@ class RecipeIndexer:
             self.logger.error(f"Error exporting fulltext index: {e}")
 
 def main():
-    """Main function for building the index"""
-    # Initialize indexer
+    """Main function for building the recipe index."""
     html_dir = "data/raw_html"
     indexer = RecipeIndexer(html_dir)
     
-    # Build index
     print("Building index from HTML files...")
+    
     if indexer.build_index():
-        # Save index
+        # Save and export index files
         indexer.save_index()
-        
-        # Export documents for inspection
         indexer.export_documents()
-        
-        # Export fulltext index for search
         indexer.export_fulltext_index()
         
+        # Display statistics
         print("\n" + "="*60)
         print("Index Statistics:")
         stats = indexer.index.get_stats()
         for key, value in stats.items():
             print(f"  {key}: {value}")
-        
+                                        
         print("\nIndex building completed successfully!")
         print("Use search.py to search the indexed recipes.")
         

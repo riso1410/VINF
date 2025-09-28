@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """
-Recipe Search Engine - Fulltext Search Only
+Recipe Search Engine
 
-This module provides a simple fulltext search interface for recipe documents.
-It loads recipes from JSON and performs basic text matching.
+This module provides a fulltext search interface for recipe documents
+using TF-based scoring with multi-term query optimization.
 """
 
 import json
+import re
 import sys
 from typing import Dict, List
 import logging
 from pathlib import Path
 
 class RecipeSearchEngine:
-    """Search engine for recipe documents using fulltext search with inverted index"""
+    """Search engine for recipe documents using fulltext search with TF scoring."""
     
     def __init__(self, index_file: str = 'data/index/fulltext_index.json', 
                  documents_file: str = 'data/index/recipe_documents.json'):
+        """
+        Initialize the search engine.
+        
+        Args:
+            index_file: Path to the fulltext index JSON file
+            documents_file: Path to the recipe documents JSON file
+        """
         self.documents = {}
         self.inverted_index = {}
         self.stats = {}
@@ -25,7 +33,12 @@ class RecipeSearchEngine:
         self.load_documents(documents_file)
     
     def _setup_logging(self):
-        """Setup logging configuration"""
+        """
+        Setup logging configuration.
+        
+        Returns:
+            logging.Logger: Configured logger instance
+        """
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,7 +50,15 @@ class RecipeSearchEngine:
         return logging.getLogger(__name__)
     
     def load_fulltext_index(self, filename: str) -> bool:
-        """Load fulltext index from JSON file"""
+        """
+        Load fulltext index from JSON file.
+        
+        Args:
+            filename: Path to the fulltext index JSON file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             if not Path(filename).exists():
                 self.logger.error(f"Fulltext index file {filename} not found. Please run indexer.py first.")
@@ -57,7 +78,15 @@ class RecipeSearchEngine:
             return False
     
     def load_documents(self, filename: str) -> bool:
-        """Load recipe documents from JSON file"""
+        """
+        Load recipe documents from JSON file.
+        
+        Args:
+            filename: Path to the recipe documents JSON file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             if not Path(filename).exists():
                 self.logger.error(f"Documents file {filename} not found. Please run indexer.py first.")
@@ -74,203 +103,239 @@ class RecipeSearchEngine:
             return False
     
     def tokenize_query(self, query: str) -> List[str]:
-        """Tokenize and normalize query terms (simple version)"""
-        import re
+        """
+        Tokenize and normalize query terms with simple stemming.
         
-        # Convert to lowercase and extract words
+        Args:
+            query: Search query string
+            
+        Returns:
+            list: List of processed query terms
+        """
         query = query.lower()
         tokens = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-\']*\b', query)
         
-        # Simple stemming and filtering (basic version)
-        processed_tokens = []
-        stop_words = {'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-                     'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-                     'to', 'was', 'will', 'with', 'you', 'your', 'this', 'but', 'they',
-                     'have', 'had', 'what', 'said', 'each', 'which', 'she', 'do', 'how'}
+        # Basic stop words
+        stop_words = {
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+            'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+            'to', 'was', 'will', 'with', 'you', 'your', 'this', 'but', 'they',
+            'have', 'had', 'what', 'said', 'each', 'which', 'she', 'do', 'how'
+        }
         
+        processed_tokens = []
         for token in tokens:
             if len(token) > 2 and token not in stop_words:
-                # Simple stemming
-                if token.endswith('ing') and len(token) > 5:
-                    token = token[:-3]
-                elif token.endswith('ed') and len(token) > 4:
-                    token = token[:-2]
-                elif token.endswith('s') and len(token) > 3 and not token.endswith('ss'):
-                    token = token[:-1]
-                
-                if len(token) > 2:
-                    processed_tokens.append(token)
+                # Apply simple stemming
+                stemmed = self._simple_stem(token)
+                if len(stemmed) > 2:
+                    processed_tokens.append(stemmed)
         
         return processed_tokens
     
-    def search(self, query: str, top_k: int = 10) -> Dict:
+    def _simple_stem(self, word: str) -> str:
         """
-        Search using the inverted index for efficient fulltext search
+        Apply simple stemming rules to a word.
         
         Args:
-            query: Search query
+            word: Word to stem
+            
+        Returns:
+            str: Stemmed word
+        """
+        if word.endswith('ing') and len(word) > 5:
+            return word[:-3]
+        elif word.endswith('ed') and len(word) > 4:
+            return word[:-2]
+        elif word.endswith('s') and len(word) > 3 and not word.endswith('ss'):
+            return word[:-1]
+        return word
+    
+    def calculate_tf_score(self, term: str, doc_text: str) -> float:
+        """
+        Calculate Term Frequency score for a term in document text.
+        
+        Args:
+            term: Term to calculate TF for
+            doc_text: Document text
+            
+        Returns:
+            float: TF score (term count / total words)
+        """
+        words = doc_text.lower().split()
+        if not words:
+            return 0.0
+        
+        term_count = words.count(term.lower())
+        return term_count / len(words)
+    
+    def search(self, query: str, top_k: int = 1) -> Dict:
+        """
+        Search using TF scoring with multi-term query optimization.
+        
+        Args:
+            query: Search query string
             top_k: Number of results to return
             
         Returns:
-            Dictionary with search results
+            dict: Search results dictionary
         """
         if not self.documents or not self.inverted_index:
             self.logger.error("No index loaded. Cannot perform search.")
             return {}
         
-        # Tokenize query
         query_terms = self.tokenize_query(query)
-        
         if not query_terms:
             return {'fulltext': []}
         
-        # Get candidate documents using inverted index
+        # Find candidate documents containing any query term
         candidate_docs = set()
-        term_doc_counts = {}
-        
         for term in query_terms:
             if term in self.inverted_index:
-                doc_list = self.inverted_index[term]
-                candidate_docs.update(doc_list)
-                term_doc_counts[term] = len(doc_list)
+                candidate_docs.update(self.inverted_index[term])
         
         if not candidate_docs:
             return {'fulltext': []}
         
-        # Score candidate documents
+        # Score each candidate document
         results = []
-        query_lower = query.lower()
-        
-        for doc_id in candidate_docs:
-            doc = self.documents[doc_id]
+        for recipe_title in candidate_docs:
+            doc = self.documents[recipe_title]
             
-            # Count matching terms
-            match_count = 0
-            for term in query_terms:
-                if term in self.inverted_index and doc_id in self.inverted_index[term]:
-                    match_count += 1
-            
-            # Calculate relevance score
-            relevance_score = match_count / len(query_terms)
-            
-            # Combine all searchable text for additional scoring
-            searchable_text = (
-                doc['title'] + " " +
-                " ".join(doc['ingredients']) + " " +
-                doc['method'] + " " +
+            # Combine searchable text fields
+            searchable_text = " ".join([
+                recipe_title,
+                " ".join(doc['ingredients']),
+                doc['method'],
                 doc['chef_name']
-            ).lower()
+            ])
             
-            # Bonus for exact phrase match
-            if query_lower in searchable_text:
-                relevance_score += 0.5
+            # Calculate scores for each query term
+            individual_tf_scores = {}
+            matched_terms = []
+            total_tf_score = 0.0
             
-            # Bonus for title matches
-            if query_lower in doc['title'].lower():
-                relevance_score += 0.3
-            
-            # Boost score for rare terms (inverse document frequency concept)
-            rarity_boost = 0
             for term in query_terms:
-                if term in term_doc_counts:
-                    # Give higher score to documents containing rarer terms
-                    rarity_boost += 1.0 / (1 + term_doc_counts[term] / len(self.documents))
+                if term in self.inverted_index and recipe_title in self.inverted_index[term]:
+                    # Base TF score
+                    tf_score = self.calculate_tf_score(term, searchable_text)
+                    
+                    # Apply field-specific bonuses
+                    title_bonus = 0.5 if term.lower() in recipe_title.lower() else 0
+                    ingredient_bonus = 0.3 if any(term.lower() in ing.lower() for ing in doc['ingredients']) else 0
+                    
+                    adjusted_tf_score = tf_score + title_bonus + ingredient_bonus
+                    individual_tf_scores[term] = adjusted_tf_score
+                    matched_terms.append(term)
+                    total_tf_score += adjusted_tf_score
+                else:
+                    individual_tf_scores[term] = 0.0
             
-            relevance_score += rarity_boost * 0.1
+            if not matched_terms:
+                continue
+            
+            # Calculate final score with multi-term bonus
+            avg_tf_score = total_tf_score / len(query_terms)
+            term_match_ratio = len(matched_terms) / len(query_terms)
+            multi_term_bonus = term_match_ratio * 0.5  # Bonus for matching multiple terms
+            final_score = avg_tf_score + multi_term_bonus
             
             results.append({
-                'doc_id': doc_id,
-                'score': relevance_score,
-                'match_count': match_count,
-                'title': doc['title'],
+                'id': recipe_title,
+                'score': final_score,
+                'tf_score': avg_tf_score,
+                'multi_term_bonus': multi_term_bonus,
+                'term_match_ratio': term_match_ratio,
+                'matched_terms': matched_terms,
+                'individual_tf_scores': individual_tf_scores,
+                'title': recipe_title,
                 'chef_name': doc['chef_name'],
                 'prep_time': doc['prep_time'],
                 'url': doc['url'],
-                'ingredients': doc['ingredients'][:3],  # Show first 3 ingredients
-                'method_preview': doc['method'][:200] + "..." if len(doc['method']) > 200 else doc['method']
+                'ingredients': doc['ingredients'],
+                'method_preview': searchable_text
             })
         
-        # Sort by relevance score (descending) and return top_k
+        # Sort by score and return top results
         results.sort(key=lambda x: x['score'], reverse=True)
+        final_results = results[:top_k]
         
-        return {'fulltext': results[:top_k]}
-    
-    def get_document_details(self, doc_id: str) -> Dict:
-        """Get full details of a specific document"""
-        if not self.documents:
-            return {}
+        # Log best match details
+        if final_results:
+            best_result = final_results[0]
+            self.logger.info(f"BEST MATCH for '{query}': {best_result['title']}")
+            self.logger.info(f"  Final Score: {best_result['score']:.6f}")
+            self.logger.info(f"  TF Score: {best_result['tf_score']:.6f}")
+            self.logger.info(f"  Multi-term Bonus: {best_result['multi_term_bonus']:.6f}")
+            self.logger.info(f"  Term Match Ratio: {best_result['term_match_ratio']:.2f} ({len(best_result['matched_terms'])}/{len(query_terms)})")
+            self.logger.info(f"  Matched Terms: {best_result['matched_terms']}")
         
-        return self.documents.get(doc_id, {})
+        return {'fulltext': final_results}
     
     def print_search_results(self, results: Dict, query: str):
-        """Pretty print search results"""
-        print(f"\nSearch Results for: '{query}'")
+        """
+        Pretty print the search results (designed for single best result).
+        
+        Args:
+            results: Search results dictionary
+            query: Original search query
+        """
+        print(f"\nBest Match for: '{query}'")
         print("=" * 60)
         
         if 'fulltext' in results and results['fulltext']:
-            print(f"\n� Full-Text Search Results ({len(results['fulltext'])} found):")
-            print("-" * 50)
-            for i, result in enumerate(results['fulltext'], 1):
-                print(f"{i}. {result['title']}")
-                print(f"   👨‍🍳 Chef: {result['chef_name']}")
-                print(f"   ⏱️  Time: {result['prep_time']}")
-                print(f"   📊 Relevance: {result['score']:.2f} ({result['match_count']}/{len(query.split())} terms matched)")
-                if result['ingredients']:
-                    ingredients_str = ", ".join(result['ingredients'])
-                    print(f"   🥘 Key ingredients: {ingredients_str}")
-                if result['method_preview']:
-                    print(f"   � Method preview: {result['method_preview']}")
-                if result['url']:
-                    print(f"   🔗 URL: {result['url']}")
-                print()
-        
-        if not results or not results.get('fulltext'):
-            print("No results found. Try different search terms.")
-            print("\n💡 Search Tips:")
-            print("• Try ingredient names: 'chicken', 'chocolate', 'pasta'")
-            print("• Try cooking methods: 'grilled', 'baked', 'fried'")
-            print("• Try partial phrases: 'chicken curry', 'chocolate cake'")
-    
-    def run_test_mode(self):
-        """Run search engine in test mode with predefined queries"""
-        print("🧪 Running Recipe Search Engine in TEST MODE")
-        print("=" * 60)
-        
-        test_queries = [
-            "chicken curry",
-            "chocolate cake", 
-            "pasta sauce",
-            "vegetarian recipes",
-            "air fryer",
-            "steak",
-            "soup",
-            "salad",
-            "bread",
-            "dessert"
-        ]
-        
-        for query in test_queries:
-            results = self.search(query, top_k=5)
-            self.print_search_results(results, query)
+            result = results['fulltext'][0]
             
-            # Add separator between queries
-            print("\n" + "="*60 + "\n")
+            print(f"{result['title']}")
+            print(f"   Chef: {result['chef_name']}")
+            print(f"   Time: {result['prep_time']}")
+            print(f"   Final Score: {result.get('score', 0):.6f}")
+            
+            # Show individual term scores
+            if 'individual_tf_scores' in result:
+                print("   Individual Term Scores:")
+                for term, score in result['individual_tf_scores'].items():
+                    status = "+" if score > 0 else "-"
+                    print(f"      {status} '{term}': {score:.6f}")
+                            
+            if result['ingredients']:
+                ingredients_str = ", ".join(result['ingredients'])
+                print(f"   Key ingredients: {ingredients_str}")
+            
+            if result['method_preview']:
+                print(f"   Method preview: {result['method_preview']}")
+
+            if result['url']:
+                print(f"   URL: {result['url']}")
+            print()
+        else:
+            self._print_no_results_help()
+    
+    def _print_no_results_help(self):
+        """Print help message when no results are found."""
+        print("No results found. Try different search terms.")
+        print("\nSearch Tips:")
+        print("• Single terms: 'chicken', 'chocolate', 'pasta'")
+        print("• Multiple terms: 'pickled onion' - prioritizes documents matching all terms")
+        print("• Returns only the single best matching document")
+        print("• Multi-term queries get bonus scoring for matching more terms")
+        print("• Title and ingredient matches receive additional scoring bonuses")
     
     def run_interactive_mode(self):
-        """Run search engine in interactive console mode"""
-        print("🔍 Recipe Search Engine - Interactive Mode")
+        """Run search engine in interactive console mode."""
+        print("Recipe Search Engine - Interactive Mode")
         print("=" * 60)
         print("Enter your search queries. Type 'help' for commands or 'quit' to exit.")
         
         while True:
             try:
-                query = input("\n🔍 Search> ").strip()
+                query = input("\nSearch> ").strip()
                 
                 if not query:
                     continue
                 
                 if query.lower() in ['quit', 'exit', 'q']:
-                    print("Goodbye! Happy cooking! 👋")
+                    print("Goodbye! Happy cooking!")
                     break
                 
                 if query.lower() == 'help':
@@ -281,94 +346,61 @@ class RecipeSearchEngine:
                     self.show_stats()
                     continue
                 
-                # Parse query options
-                top_k = 10
-                
-                # Handle top:N:query format
-                if ':' in query and query.startswith('top:'):
-                    parts = query.split(':', 2)
-                    if len(parts) == 3:
-                        try:
-                            top_k = int(parts[1].strip())
-                            query = parts[2].strip()
-                        except ValueError:
-                            print("Invalid number format. Using default top 10.")
-                
-                # Perform search
-                results = self.search(query, top_k=top_k)
+                # Perform search and display results
+                results = self.search(query, top_k=1)
                 self.print_search_results(results, query)
                 
             except KeyboardInterrupt:
-                print("\nGoodbye! Happy cooking! 👋")
+                print("\nGoodbye! Happy cooking!")
                 break
             except Exception as e:
                 self.logger.error(f"Search error: {e}")
                 print(f"An error occurred: {e}")
     
     def show_help(self):
-        """Display help information"""
-        print("\n📖 Help - Available Commands:")
+        """Display help information."""
+        print("\nHelp - Available Commands:")
         print("-" * 40)
-        print("• Simply type your search query (e.g., 'chicken curry')")
-        print("• 'top:N:your query' - Return top N results (e.g., 'top:3:pasta')")
+        print("• Simply type your search query (e.g., 'pickled onion')")
         print("• 'stats' - Show index statistics")
         print("• 'help' - Show this help")
         print("• 'quit' or 'exit' - Exit the search engine")
-        print("\n💡 Full-Text Search Tips:")
+        print("\nSearch Features:")
+        print("• TF scoring with multi-term optimization")
+        print("• Returns only the single best matching document")
+        print("• Multi-term queries prioritize documents matching all terms")
+        print("• Title and ingredient matches receive bonus scoring")
         print("• Search matches words in title, ingredients, method, and chef name")
-        print("• Use multiple words to find recipes containing all terms")
-        print("• Try ingredient names: 'chicken', 'chocolate', 'pasta'")
-        print("• Try cooking methods: 'grilled', 'baked', 'fried'")
-        print("• Try cuisine types: 'italian', 'indian', 'mexican'")
-        print("• Try dietary preferences: 'vegetarian', 'vegan', 'gluten-free'")
-        print("• Exact phrase matches get higher relevance scores")
+        print("• Try multi-term queries: 'pickled onion', 'blue cheese', 'chocolate cake'")
     
     def show_stats(self):
-        """Display fulltext index statistics"""
+        """Display index statistics."""
         if not self.documents:
             print("No index loaded.")
             return
         
-        print("\n📈 Fulltext Index Statistics:")
+        print("\nIndex Statistics:")
         print("-" * 30)
         print(f"• Total Documents: {len(self.documents):,}")
         print(f"• Vocabulary Size: {len(self.inverted_index):,}")
         
-        if self.stats:
-            for key, value in self.stats.items():
-                formatted_key = key.replace('_', ' ').title()
-                print(f"• {formatted_key}: {value:,}")
-        
-        # Calculate some basic statistics
         if self.documents:
             total_ingredients = sum(len(doc['ingredients']) for doc in self.documents.values())
             avg_ingredients = total_ingredients / len(self.documents)
             print(f"• Average Ingredients Per Recipe: {avg_ingredients:.1f}")
             
-            # Count unique chefs
             unique_chefs = len(set(doc['chef_name'] for doc in self.documents.values()))
             print(f"• Unique Chefs: {unique_chefs:,}")
-            
-            # Show some example terms from the index
-            if self.inverted_index:
-                print(f"• Sample Terms: {', '.join(list(self.inverted_index.keys())[:10])}")
 
 def main():
-    """Main function - entry point for the search engine"""
-    # Initialize search engine
+    """Main function - entry point for the search engine."""
     search_engine = RecipeSearchEngine()
     
     if not search_engine.documents:
-        print("❌ Failed to load documents. Please run 'python indexer.py' first to build the index.")
+        print("Failed to load documents. Please run 'python indexer.py' first to build the index.")
         sys.exit(1)
     
-    # Check command line arguments for mode selection
-    if len(sys.argv) > 1 and sys.argv[1] == 'test':
-        # Test mode
-        search_engine.run_test_mode()
-    else:
-        # Interactive mode (default)
-        search_engine.run_interactive_mode()
+    search_engine.run_interactive_mode()
 
 if __name__ == "__main__":
     main()
