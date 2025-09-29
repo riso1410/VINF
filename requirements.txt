@@ -1,2 +1,4 @@
 requests
-beautifulsoup4
+scrapy
+urllib3
+selenium
