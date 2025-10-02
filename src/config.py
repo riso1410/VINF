@@ -40,7 +40,6 @@ SEARCH_LOG = os.path.join(PROJECT_ROOT, "logs", "search.log")
 START_URL = "https://foodnetwork.co.uk/"
 
 # Crawler behavior
-MAX_URLS = None  # Maximum URLs to crawl (None = unlimited)
 RESTART_INTERVAL = 50  # Restart browser every N pages to prevent memory issues
 
 # Selenium/Chrome settings
@@ -52,7 +51,6 @@ SELENIUM_JS_WAIT = 2  # Additional wait for JavaScript to load (seconds)
 SKIP_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.xml']
 
 # Chrome options
-CHROME_HEADLESS = True
 CHROME_WINDOW_SIZE = "1920,1080"
 CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
@@ -64,12 +62,7 @@ MAX_RETRIES = 3
 # ============================================================================
 
 # Scraping behavior
-SCRAPER_RATE_LIMIT = 0.1  # seconds between processing URLs
 SCRAPER_PROGRESS_INTERVAL = 10  # Log progress every N recipes
-
-# Ingredient limits
-MAX_INGREDIENTS = 20  # Maximum number of ingredients to extract
-MIN_INGREDIENT_LENGTH = 5  # Minimum length for valid ingredient text
 
 # ============================================================================
 # INDEXER SETTINGS
@@ -107,18 +100,6 @@ DEFAULT_TOP_K = 10  # Default number of search results to return
 IDF_SMOOTHING = 1  # Smoothing factor to avoid division by zero
 
 # ============================================================================
-# DIFFICULTY MAPPING
-# ============================================================================
-
-DIFFICULTY_MAP = {
-    1: "Very Easy",
-    2: "Easy", 
-    3: "Medium",
-    4: "Hard",
-    5: "Very Hard"
-}
-
-# ============================================================================
 # LOGGING SETTINGS
 # ============================================================================
 
@@ -150,9 +131,7 @@ def get_chrome_options():
     
     chrome_options = Options()
     
-    if CHROME_HEADLESS:
-        chrome_options.add_argument('--headless')
-    
+    chrome_options.add_argument('--headless')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
