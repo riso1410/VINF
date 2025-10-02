@@ -7,181 +7,160 @@
 
 # Food Network UK Recipe Crawler and Search Engine
 
-A Python-based web crawler and search engine for Food Network UK recipes. This project crawls recipe pages, builds an inverted index, and provides fulltext search functionality with TF-IDF and BM25 scoring.
+A Python-based web crawler and search engine for Food Network UK recipes. This project crawls recipe pages, scrapes structured data, builds a simple inverted index, and provides a command-line interface for full-text search.
 
-## Features
+## How It Works
 
-- **Web Crawler**: Crawls Food Network UK recipe collections and downloads HTML pages
-- **Recipe Indexer**: Extracts recipe data and builds inverted index 
-- **Search Engine**: Provides fulltext search functionality for recipes
-- **Logging**: Comprehensive logging for debugging and monitoring
+The system is composed of four main modules that are run sequentially. The diagram below illustrates the workflow from crawling to searching.
+
+### Architecture Diagram
+
+```
+[ Start URL: foodnetwork.co.uk ]
+             |
+             v
+    +------------------+
+    |   1. Crawler     |
+    |  (src/crawler.py)|
+    +------------------+
+             |
+             | Saves raw HTML files to data/raw_html/
+             | and recipe URLs to data/urls.txt
+             v
+    +------------------+
+    |   2. Scraper     |
+    |  (src/scraper.py)|
+    +------------------+
+             |
+             | Parses HTML to extract structured data,
+             | saves it to data/scraped/recipes.jsonl
+             v
+    +------------------+
+    |   3. Indexer     |
+    |  (src/indexer.py)|
+    +------------------+
+             |
+             | Builds an inverted index from recipe data,
+             | saves it to data/index/search_index.pkl
+             v
+    +------------------+      +------------------+
+    |   4. Searcher    |<---->|   User typing a  |
+    |   (src/search.py)|      |      query       |
+    +------------------+      +------------------+
+             |
+             v
+    [Ranked Search Results]
+```
+
+### Component Descriptions
+
+1.  **Crawler (`src/crawler.py`)**: Uses Selenium to dynamically browse `foodnetwork.co.uk`. It starts from a given URL, discovers all links on the page, and adds valid new ones to a queue. It proceeds in a Breadth-First Search (BFS) manner, saving the raw HTML of each visited recipe page to the `data/raw_html` directory. It also compiles a list of all found recipe URLs in `data/urls.txt`.
+
+2.  **Scraper (`src/scraper.py`)**: Processes the HTML files saved by the crawler. It reads the list of recipe URLs and, for each one, parses the corresponding HTML file to extract structured information like title, description, ingredients, and method. This clean, structured data is then saved into a single JSONL file: `data/scraped/recipes.jsonl`.
+
+3.  **Indexer (`src/indexer.py`)**: Reads the `recipes.jsonl` file and builds a simple inverted index. For each recipe, it tokenizes the text, removes common English stop words, and counts the frequency of each term (Term Frequency - TF). The final index, which maps terms to the documents they appear in, is saved as a compressed binary file at `data/index/search_index.pkl`.
+
+4.  **Searcher (`src/search.py`)**: Loads the `search_index.pkl` file and provides an interactive command-line interface. When a user enters a query, the searcher tokenizes it, calculates TF-IDF scores to determine document relevance, and presents a ranked list of the top 10 matching recipes.
 
 ## Project Structure
 
 ```
-├── crawler.py          # Web crawler for Food Network UK recipes
-├── indexer.py          # Recipe indexer with TF-IDF and BM25 metrics
-├── search.py           # Search engine with fulltext search
-├── requirements.txt    # Python dependencies
-├── README.md          # This file
-├── data/              # Data directory
-│   ├── raw_html/      # Downloaded HTML files
-│   └── index/         # Generated index files
-└── logs/              # Log files
-    ├── crawler.log    # Crawler logs
-    ├── indexer.log    # Indexer logs
-    └── search.log     # Search logs
+├── data/
+│   ├── index/         # Stores the final search_index.pkl
+│   ├── raw_html/      # Stores raw HTML files from the crawler
+│   └── scraped/       # Stores the scraped recipes.jsonl file
+├── logs/              # Contains log files for each module
+├── src/
+│   ├── crawler.py     # Module 1: Crawls the website for recipe pages
+│   ├── scraper.py     # Module 2: Extracts structured data from HTML
+│   ├── indexer.py     # Module 3: Builds the inverted search index
+│   └── search.py      # Module 4: Provides the search CLI
+├── tests/
+│   └── test.py        # Evaluates search engine performance
+├── .gitignore
+├── README.md
+└── requirements.txt
 ```
 
 ## Prerequisites
 
-- Python 3.13
+- Python 3.10 or newer
+- Google Chrome browser (for the Selenium crawler)
 
 ## Setup Instructions
 
-### Step 1: Clone or Download the Project
+### 1. Clone the Project
 
-If you haven't already, make sure you have all the project files in your workspace.
+Ensure you have all the project files in your local workspace.
 
-### Step 2: Create a Virtual Environment
+### 2. Create and Activate a Virtual Environment
 
-Open Command Prompt (cmd) and navigate to your project directory:
+Open a terminal or command prompt in the project's root directory.
 
-```cmd
-cd "c:\Users\risos\OneDrive\Desktop\FIIT\7. semester\VINF"
-```
-
-Create a virtual environment:
-
+**On Windows:**
 ```cmd
 python -m venv .venv
-```
-
-### Step 3: Activate the Virtual Environment
-
-Activate the virtual environment:
-
-```cmd
 .venv\Scripts\activate
 ```
 
-You should see `(.venv)` at the beginning of your command prompt, indicating the virtual environment is active.
+**On macOS/Linux:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+You should see `(.venv)` at the beginning of your command prompt.
 
-### Step 4: Install Dependencies
+### 3. Install Dependencies
 
-Install the required Python packages:
-
+Install the required Python packages using pip:
 ```cmd
 pip install -r requirements.txt
 ```
-
-This will install:
-- `requests` - For making HTTP requests to web pages
-- `beautifulsoup4` - For parsing HTML content
+This will install `selenium` and other necessary libraries. The crawler also requires `chromedriver`, which `selenium` will attempt to download and manage automatically.
 
 ## How to Run the Project
 
-### Step 1: Crawl Recipe Data
+Run the modules from the root directory in the following order.
 
-Run the crawler to download recipe HTML pages from Food Network UK:
-
+### Step 1: Crawl the Website
+This step uses Selenium to open a Chrome browser and download recipe pages. It can take a significant amount of time.
 ```cmd
-python crawler.py
+python src/crawler.py
 ```
+- **Output**: HTML files in `data/raw_html/` and a URL list in `data/urls.txt`.
 
-This will:
-- Create necessary directories (`data/raw_html/`, `logs/`)
-- Crawl Food Network UK recipe collections
-- Download HTML pages to `data/raw_html/`
-- Generate logs in `logs/crawler.log`
-
-**Note**: The crawling process may take several minutes to hours depending on the number of recipes.
-
-### Step 2: Build the Search Index
-
-After crawling is complete, build the inverted index:
-
+### Step 2: Scrape Recipe Data
+This step parses the downloaded HTML to extract structured recipe information.
 ```cmd
-python indexer.py
+python src/scraper.py
 ```
+- **Output**: A `recipes.jsonl` file in `data/scraped/`.
 
-This will:
-- Parse downloaded HTML files
-- Extract recipe data (title, ingredients, method, chef name, time,...)
-- Save index files to `data/index/`
-- Generate logs in `logs/indexer.log`
-
-### Step 3: Search Recipes
-
-Once the index is built, you can search for recipes:
-
+### Step 3: Build the Search Index
+This step creates the inverted index from the scraped recipe data.
 ```cmd
-python search.py
+python src/indexer.py
 ```
+- **Output**: A `search_index.pkl` file in `data/index/`.
 
-This will start an interactive search interface where you can:
-- Enter search queries
-- View search results with scores
-- Browse recipe details
-
-## Usage Examples
-
-### Running the Full Pipeline
-
-To run the complete pipeline from start to finish:
-
+### Step 4: Search for Recipes
+Once the index is built, you can start the interactive search engine.
 ```cmd
-# Activate virtual environment 
-.venv\Scripts\activate
-
-# Step 1: Crawl recipes
-python crawler.py
-
-# Step 2: Build index
-python indexer.py
-
-# Step 3: Search recipes
-python search.py
+python src/search.py
 ```
+- You will be prompted to enter search queries like "chicken soup" or "chocolate cake".
+- Type `exit` or `quit` to close the program.
 
-### Sample Search Queries
-
-Once the search engine is running, you can try queries like:
-- "chicken pasta"
-- "chocolate cake"
-- "vegetarian"
-- "Jamie Oliver" (chef name)
-- "30 minutes" (preparation time)
-
-## Output Files
-
-After running the project, you'll find:
-
-- `data/raw_html/*.html` - Downloaded recipe HTML files
-- `data/index/recipe_documents.json` - Processed recipe documents
-- `data/index/fulltext_index.json` - Fulltext search index
-- `data/index/tfidf_index.json` - TF-IDF index (if generated)
-- `data/index/bm25_index.json` - BM25 index (if generated)
-- `logs/*.log` - Log files for debugging
+### (Optional) Step 5: Evaluate Search Performance
+After building the index, you can run the evaluation test to measure the search engine's Hit Rate and Precision.
+```cmd
+python tests/test.py
+```
+- **Output**: A report with performance metrics based on 50 auto-generated queries.
 
 ## Deactivating the Virtual Environment
 
-When you're done working on the project, you can deactivate the virtual environment:
-
+When you're done, you can deactivate the virtual environment:
 ```cmd
 deactivate
 ```
-
-## Log Files
-
-Check the log files in the `logs/` directory for detailed error information:
-- `crawler.log` - Crawling issues
-- `indexer.log` - Indexing issues  
-- `search.log` - Search issues
-
-## Project Dependencies
-
-This project uses the following Python libraries:
-
-- **requests**: HTTP library for making web requests
-- **beautifulsoup4**: HTML parsing library

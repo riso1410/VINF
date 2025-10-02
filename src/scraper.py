@@ -1,15 +1,15 @@
 import os
 import json
 import re
-import logging
 import time
 import html
 from dataclasses import dataclass, field
 from typing import List, Optional
+import config
 
 @dataclass
 class RecipeMetadata:
-    """Recipe metadata structure"""
+    """Recipe object structure"""
     url: str = ""
     html_file: str = ""
     title: str = ""
@@ -22,19 +22,19 @@ class RecipeMetadata:
     chef: str = ""
 
 class RecipeScraper:
-    def __init__(self, html_dir: str = "data/raw_html", output_dir: str = "data/scraped", urls_file: str = "data/urls.txt"):
-        self.html_dir = html_dir
-        self.output_dir = output_dir
-        self.urls_file = urls_file
+    def __init__(self, html_dir: str = None, output_dir: str = None, urls_file: str = None):
+        # Use config defaults if not specified
+        self.html_dir = html_dir if html_dir is not None else config.RAW_HTML_DIR
+        self.output_dir = output_dir if output_dir is not None else config.SCRAPED_DIR
+        self.urls_file = urls_file if urls_file is not None else config.URLS_FILE
         self.recipes_file = os.path.join(self.output_dir, "recipes.jsonl")
         
-        # Setup logging
-        logging.basicConfig(level=logging.INFO, 
-                          format='%(asctime)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)
-        
-        # Create output directory if it doesn't exist
+        # Create necessary directories
         os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(config.LOGS_DIR, exist_ok=True)
+        
+        # Setup logging
+        self.logger = config.setup_logging(config.SCRAPER_LOG)
 
     def clean_text(self, text: str) -> str:
         """Clean text by removing HTML tags and normalizing whitespace"""
@@ -145,8 +145,6 @@ class RecipeScraper:
                 
                 for recipe_text in potential_recipes:
                     try:
-                        # Try to construct a valid JSON object
-                        # Look for the full recipe object
                         start_pos = js_text.find(recipe_text)
                         if start_pos == -1:
                             continue
@@ -275,44 +273,61 @@ class RecipeScraper:
         return ""
 
     def extract_ingredients(self, html_content: str, json_data: dict) -> List[str]:
-        """Extract recipe ingredients"""
-        # First try JSON-LD
-        if json_data.get('recipeIngredient'):
-            ingredients = json_data['recipeIngredient']
-            if isinstance(ingredients, list):
-                return [self.clean_text(ing) for ing in ingredients if ing]
+        """Extract ingredients from JSON-LD structured data"""
+        ingredients = []
         
-        # Try embedded recipe data
-        embedded_data = self.extract_embedded_recipe_data(html_content)
-        if embedded_data and 'ingredients' in embedded_data:
-            ingredients = embedded_data['ingredients']
-            if isinstance(ingredients, list):
-                # Handle different ingredient formats
-                result = []
-                for ing in ingredients:
-                    if isinstance(ing, dict):
-                        title = ing.get('title', '')
-                        if title:
-                            result.append(self.clean_text(title))
-                    elif isinstance(ing, str):
-                        result.append(self.clean_text(ing))
-                return result
+        # First try from passed json_data (if already extracted)
+        if json_data and 'recipeIngredient' in json_data:
+            recipe_ingredients = json_data['recipeIngredient']
+            for ingredient in recipe_ingredients:
+                ingredient_text = str(ingredient).strip()
+                
+                # Skip section headers (usually short and end with colon)
+                if (ingredient_text and 
+                    not ingredient_text.endswith(':') and 
+                    len(ingredient_text) > 5 and
+                    not ingredient_text.startswith('For the')):
+                    ingredients.append(ingredient_text)
+            
+            if ingredients:
+                return ingredients[:20]  # Limit to first 20
         
-        # Fallback to HTML patterns
-        patterns = [
-            r'<ul[^>]*class="[^"]*ingredient[^"]*"[^>]*>(.*?)</ul>',
-            r'<ol[^>]*class="[^"]*ingredient[^"]*"[^>]*>(.*?)</ol>',
-            r'<div[^>]*class="[^"]*ingredient[^"]*"[^>]*>(.*?)</div>'
-        ]
+        # If not found in json_data, extract from HTML JSON-LD scripts
+        try:
+            json_ld_pattern = r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>'
+            json_matches = re.findall(json_ld_pattern, html_content, re.DOTALL | re.IGNORECASE)
+            
+            for json_content in json_matches:
+                try:
+                    # Parse JSON
+                    data = json.loads(json_content)
+                    
+                    # Check if this is recipe data
+                    if isinstance(data, dict) and data.get('@type') == 'Recipe':
+                        recipe_ingredients = data.get('recipeIngredient', [])
+                        
+                        for ingredient in recipe_ingredients:
+                            ingredient_text = str(ingredient).strip()
+                            
+                            # Skip section headers (usually short and end with colon)
+                            if (ingredient_text and 
+                                not ingredient_text.endswith(':') and 
+                                len(ingredient_text) > 5 and
+                                not ingredient_text.startswith('For the')):
+                                ingredients.append(ingredient_text)
+                        
+                        # If we found ingredients, break out of the loop
+                        if ingredients:
+                            break
+                            
+                except json.JSONDecodeError:
+                    # Skip invalid JSON
+                    continue
         
-        for pattern in patterns:
-            match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
-            if match:
-                li_matches = re.findall(r'<li[^>]*>(.*?)</li>', match.group(1), re.IGNORECASE | re.DOTALL)
-                if li_matches:
-                    return [self.clean_text(item) for item in li_matches if item.strip()]
+        except Exception as e:
+            self.logger.error(f"Error extracting ingredients from JSON-LD: {e}")
         
-        return []
+        return ingredients 
 
     def extract_method(self, html_content: str, json_data: dict) -> str:
         """Extract recipe method as clean text"""
@@ -525,14 +540,7 @@ class RecipeScraper:
         
         try:
             difficulty_num = int(difficulty)
-            difficulty_map = {
-                1: "Easy",
-                2: "Medium", 
-                3: "Hard",
-                4: "Very Hard",
-                5: "Expert"
-            }
-            return difficulty_map.get(difficulty_num, str(difficulty))
+            return config.DIFFICULTY_MAP.get(difficulty_num, str(difficulty))
         except (ValueError, TypeError):
             return str(difficulty) if difficulty else ""
 
@@ -587,8 +595,6 @@ class RecipeScraper:
         )
         
         return metadata
-
-
 
     def save_to_jsonl(self, metadata: RecipeMetadata):
         """Save single recipe to the main recipes.jsonl file"""
@@ -648,13 +654,13 @@ class RecipeScraper:
                     self.save_to_jsonl(metadata)
                     successful_count += 1
                     
-                    if successful_count % 10 == 0:
+                    if successful_count % config.SCRAPER_PROGRESS_INTERVAL == 0:
                         self.logger.info(f"Successfully processed {successful_count} recipes so far...")
                 
                 processed_count += 1
                 
                 # Rate limiting
-                time.sleep(0.1)
+                time.sleep(config.SCRAPER_RATE_LIMIT)
                 
             except Exception as e:
                 self.logger.error(f"Error processing URL {url}: {e}")

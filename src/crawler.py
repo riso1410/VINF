@@ -2,34 +2,26 @@ import os
 import re
 from urllib.parse import urljoin, urlparse
 from collections import deque
-import logging
 import time
 import pickle
 import random
+import subprocess
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+import config
 
 class Crawler:
-    def __init__(self, start_url="https://foodnetwork.co.uk/"):
+    def __init__(self, start_url: str = config.START_URL):            
         # Create directories first
-        os.makedirs('data', exist_ok=True)
-        os.makedirs('data/raw_html', exist_ok=True)
-        os.makedirs('logs', exist_ok=True)
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        os.makedirs(config.RAW_HTML_DIR, exist_ok=True)
+        os.makedirs(config.LOGS_DIR, exist_ok=True)
         
         # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('logs/crawler.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = config.setup_logging(config.CRAWLER_LOG)
         
         # Initialize crawler state
         self.start_url = start_url
@@ -38,44 +30,31 @@ class Crawler:
         self.visited_urls = set()
         self.recipe_urls = set()
         
-        # Crawler settings
-        self.max_urls = None
+        # Crawler settings from config
+        self.max_urls = config.MAX_URLS
         self.driver = None
+        self.pages_crawled_since_restart = 0
+        self.restart_interval = config.RESTART_INTERVAL
         
         # Initialize Selenium WebDriver
         self.setup_selenium()
         
         # Load checkpoint if exists
-        self.checkpoint_file = 'data/crawler_checkpoint.pkl'
+        self.checkpoint_file = config.CHECKPOINT_FILE
         self.load_checkpoint()
     
     def setup_selenium(self):
         """Initialize Selenium WebDriver with Chrome"""
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')  # Run in background
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
-        # Suppress common Chrome errors in headless mode
-        chrome_options.add_argument('--disable-logging')
-        chrome_options.add_argument('--log-level=3')
-        chrome_options.add_argument('--disable-background-networking')
-        chrome_options.add_argument('--disable-default-apps')
-        chrome_options.add_argument('--disable-sync')
+        chrome_options = config.get_chrome_options()
         
-        # Disable images and CSS for faster loading
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.managed_default_content_settings.stylesheets": 2
-        }
-        chrome_options.add_experimental_option("prefs", prefs)
-        
-        self.driver = webdriver.Chrome(options=chrome_options)
-        self.driver.set_page_load_timeout(30)  # 30 seconds timeout
-        
-        self.logger.info("Selenium WebDriver initialized successfully")
+        try:
+            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.set_page_load_timeout(config.SELENIUM_PAGE_LOAD_TIMEOUT)
+            self.driver.implicitly_wait(config.SELENIUM_IMPLICIT_WAIT)
+            self.logger.info("Selenium WebDriver initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize WebDriver: {e}")
+            raise
     
     def cleanup_selenium(self):
         """Clean up Selenium WebDriver"""
@@ -85,6 +64,48 @@ class Crawler:
                 self.logger.info("Selenium WebDriver closed")
             except Exception as e:
                 self.logger.warning(f"Error closing WebDriver: {e}")
+            finally:
+                self.driver = None
+    
+    def kill_chrome_processes(self):
+        """Kill any remaining Chrome processes"""
+        try:
+            # Kill Chrome processes on Windows
+            subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], 
+                          capture_output=True, check=False)
+            subprocess.run(['taskkill', '/F', '/IM', 'chromedriver.exe'], 
+                          capture_output=True, check=False)
+            self.logger.debug("Attempted to kill Chrome processes")
+        except Exception as e:
+            self.logger.debug(f"Could not kill Chrome processes: {e}")
+    
+    def restart_selenium(self):
+        """Restart Selenium WebDriver session"""
+        self.logger.warning("Restarting Selenium WebDriver session...")
+        self.cleanup_selenium()
+        
+        # Kill any remaining Chrome processes
+        self.kill_chrome_processes()
+        
+        time.sleep(3)  # Wait before restarting
+        try:
+            self.setup_selenium()
+            self.logger.info("Selenium WebDriver successfully restarted")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to restart WebDriver: {e}")
+            return False
+    
+    def is_session_valid(self):
+        """Check if the current WebDriver session is valid"""
+        if not self.driver:
+            return False
+        try:
+            # Try to get current URL as a simple test
+            self.driver.current_url
+            return True
+        except WebDriverException:
+            return False
     
     def load_checkpoint(self):
         """Load crawler state from checkpoint file"""
@@ -121,15 +142,14 @@ class Crawler:
             return False
             
         # Skip certain file types
-        skip_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.xml']
-        if any(url.lower().endswith(ext) for ext in skip_extensions):
+        if any(url.lower().endswith(ext) for ext in config.SKIP_EXTENSIONS):
             return False
             
         return True
     
     def is_recipe_url(self, url):
         """Check if URL is a recipe URL (/recipes/name)"""
-        return '/recipes/' in url and url.count('/') >= 4  # Basic pattern matching
+        return config.RECIPE_URL_PATTERN in url and url.count('/') >= config.RECIPE_URL_MIN_SLASHES
     
     def save_html_content(self, url, html_content):
         """Save HTML content to file"""
@@ -171,8 +191,7 @@ class Crawler:
         clean_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
         clean_content = re.sub(r'<style[^>]*>.*?</style>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
         
-        anchor_pattern = r'<a[^>]+href\s*=\s*["\']([^"\']+)["\'][^>]*>'
-        matches = re.findall(anchor_pattern, clean_content, re.IGNORECASE)
+        matches = re.findall(config.ANCHOR_PATTERN, clean_content, re.IGNORECASE)
         
         for match in matches:
             if any(char in match for char in ['{', '}', '"', '&quot;']):
@@ -190,21 +209,30 @@ class Crawler:
         
         return urls
     
-    def crawl_page(self, url):
-        """Crawl a single page and extract URLs using Selenium"""
+    def crawl_page(self, url, retry_count=0, max_retries=None):
+        """Crawl a single page and extract URLs using Selenium with retry logic"""
+        if max_retries is None:
+            max_retries = config.MAX_RETRIES
         try:
+            # Check if session is valid, restart if needed
+            if not self.is_session_valid():
+                self.logger.warning("Invalid session detected, restarting WebDriver...")
+                if not self.restart_selenium():
+                    self.logger.error(f"Failed to restart WebDriver, skipping URL: {url}")
+                    return
+            
             self.logger.info(f"Crawling: {url}")
             
             # Load page with Selenium
             self.driver.get(url)
             
             # Wait for page to load and JavaScript to execute
-            WebDriverWait(self.driver, 10).until(
+            WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
             
             # Additional wait for JavaScript content to load
-            time.sleep(3)
+            time.sleep(config.SELENIUM_JS_WAIT)
             
             # Get the full HTML after JavaScript execution
             html_content = self.driver.page_source
@@ -234,102 +262,113 @@ class Crawler:
             
         except TimeoutException:
             self.logger.error(f"Selenium timeout for {url}")
+            if retry_count < max_retries:
+                self.logger.info(f"Retrying {url} (attempt {retry_count + 1}/{max_retries})")
+                time.sleep(5)  # Wait before retry
+                self.crawl_page(url, retry_count + 1, max_retries)
+            
         except WebDriverException as e:
             self.logger.error(f"Selenium error for {url}: {e}")
+            
+            # Check for session-related errors and restart if needed
+            if "invalid session id" in str(e).lower() or "session not found" in str(e).lower():
+                if retry_count < max_retries:
+                    self.logger.warning(f"Session error detected, restarting and retrying {url}")
+                    if self.restart_selenium():
+                        time.sleep(3)
+                        self.crawl_page(url, retry_count + 1, max_retries)
+                    else:
+                        self.logger.error(f"Failed to restart WebDriver for {url}")
+                else:
+                    self.logger.error(f"Max retries exceeded for {url}")
+            
         except Exception as e:
             self.logger.error(f"Unexpected error crawling {url}: {e}")
+            if retry_count < max_retries:
+                self.logger.info(f"Retrying {url} due to unexpected error (attempt {retry_count + 1}/{max_retries})")
+                time.sleep(3)
+                self.crawl_page(url, retry_count + 1, max_retries)
     
     def save_recipe_urls(self):
         """Save recipe URLs to urls.txt file"""
         try:
-            # Read existing URLs from file to avoid duplicates
             existing_urls = set()
-            if os.path.exists('data/urls.txt'):
-                with open('data/urls.txt', 'r', encoding='utf-8') as f:
+            if os.path.exists(config.URLS_FILE):
+                with open(config.URLS_FILE, 'r', encoding='utf-8') as f:
                     existing_urls = set(line.strip() for line in f if line.strip())
-            
-            # Filter out any broken URLs that might contain JSON fragments
+
             clean_recipe_urls = set()
             for url in self.recipe_urls:
-                # Skip URLs that contain JSON-like characters or are malformed
                 if any(char in url for char in ['{', '}', '"', '&quot;', '&gt;', '&lt;']):
                     self.logger.warning(f"Skipping malformed URL: {url}")
                     continue
                 
-                # Check if URL is properly formatted
-                try:
-                    parsed = urlparse(url)
-                    if parsed.scheme and parsed.netloc and '/recipes/' in parsed.path:
-                        clean_recipe_urls.add(url)
-                except Exception:
-                    self.logger.warning(f"Skipping invalid URL: {url}")
+                parsed = urlparse(url)
+                if not (parsed.scheme and parsed.netloc and config.RECIPE_URL_PATTERN in parsed.path):
+                    self.logger.warning(f"Skipping invalid URL format: {url}")
                     continue
-            
-            # Find new URLs that aren't already in the file
+                clean_recipe_urls.add(url)
+
             new_urls = clean_recipe_urls - existing_urls
             
             if new_urls:
-                # Append new URLs to the file
-                with open('data/urls.txt', 'a', encoding='utf-8') as f:
+                with open(config.URLS_FILE, 'a', encoding='utf-8') as f:
                     for url in sorted(new_urls):
                         f.write(url + '\n')
-                self.logger.info(f"Appended {len(new_urls)} new recipe URLs to data/urls.txt")
+                self.logger.info(f"Appended {len(new_urls)} new recipe URLs to {config.URLS_FILE}")
             else:
                 self.logger.info("No new recipe URLs to append")
             
-            # Update the recipe_urls set with clean URLs
             self.recipe_urls = clean_recipe_urls
             
         except Exception as e:
             self.logger.error(f"Error saving URLs: {e}")
-    
+
     def crawl(self):
         """Main crawling method using BFS"""
-        self.logger.info("Starting BFS crawl...")
-        self.logger.info(f"Starting URL: {self.start_url}")
-        
+        self.logger.info(f"Starting BFS crawl from {self.start_url}")
         crawled_count = 0
         
         try:
             while self.urls_to_visit and (self.max_urls is None or crawled_count < self.max_urls):
-                # Get next URL from queue (BFS)
                 current_url = self.urls_to_visit.popleft()
                 
-                # Skip if already visited
                 if current_url in self.visited_urls:
                     continue
                 
-                # Mark as visited
                 self.visited_urls.add(current_url)
                 crawled_count += 1
                 
-                # Crawl the page
-                self.crawl_page(current_url)
+                if self.pages_crawled_since_restart >= self.restart_interval:
+                    self.logger.info(f"Restarting browser after {self.restart_interval} pages.")
+                    if not self.restart_selenium():
+                        self.logger.error("Failed to restart WebDriver, stopping crawl.")
+                        break
+                    self.pages_crawled_since_restart = 0
                 
-                # Save checkpoint periodically
+                self.crawl_page(current_url)
+                self.pages_crawled_since_restart += 1
+                
                 if crawled_count % 10 == 0:
                     self.save_checkpoint()
                     self.save_recipe_urls()
-                    self.logger.info(f"Progress: {crawled_count} pages crawled, {len(self.recipe_urls)} recipes found")
+                    self.logger.info(f"Progress: {crawled_count} pages crawled, {len(self.recipe_urls)} recipes found.")
                 
-                # Respect rate limiting
                 time.sleep(random.uniform(2, 5))
                 
         except KeyboardInterrupt:
-            self.logger.info("Crawling interrupted by user")
+            self.logger.info("Crawling interrupted by user.")
         except Exception as e:
-            self.logger.error(f"Crawling error: {e}")
+            self.logger.critical(f"A critical error occurred during crawling: {e}", exc_info=True)
         finally:
-            # Clean up Selenium
+            self.logger.info("Crawling finished or was interrupted. Cleaning up...")
             self.cleanup_selenium()
-            
-            # Final save
             self.save_checkpoint()
             self.save_recipe_urls()
-            
             self.logger.info("Crawling completed!")
             self.logger.info(f"Total pages visited: {len(self.visited_urls)}")
             self.logger.info(f"Total recipe URLs found: {len(self.recipe_urls)}")
+
 def main():
     """Main function to run the crawler with Selenium"""
     crawler = Crawler()
