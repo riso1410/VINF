@@ -289,32 +289,21 @@ class RecipeScraper:
             f.write('\n')
 
     def is_valid_recipe_file(self, filename: str) -> bool:
-        """Check if filename represents a valid recipe URL pattern.
-        Valid pattern: domain.com_recipes_recipename.html
-        Invalid: domain.com_recipes_category_recipename.html (extra path segments)
-        """
-        # Remove .html extension
         name_without_ext = filename.replace('.html', '')
         
-        # Split by underscores
         parts = name_without_ext.split('_')
         
-        # Must have at least 3 parts: domain, "recipes", recipe-name
         if len(parts) < 3:
             return False
         
-        # Find the index of "recipes"
         try:
             recipes_index = parts.index('recipes')
         except ValueError:
             return False
         
-        # "recipes" should not be at the end (must have recipe name after it)
         if recipes_index >= len(parts) - 1:
             return False
         
-        # There should be exactly one part after "recipes" (the recipe name)
-        # This ensures pattern like: domain_recipes_name, not domain_recipes_category_name
         if len(parts) - recipes_index != 2:
             return False
         

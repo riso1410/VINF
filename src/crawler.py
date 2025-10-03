@@ -59,7 +59,6 @@ class Crawler:
     
     def kill_chrome_processes(self):
         """Kill any remaining Chrome processes"""
-        # Kill Chrome processes on Windows
         subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], 
                       capture_output=True, check=False)
         subprocess.run(['taskkill', '/F', '/IM', 'chromedriver.exe'], 
@@ -131,18 +130,15 @@ class Crawler:
     
     def save_html_content(self, url, html_content):
         """Save HTML content to file"""
-        # Create a safe filename from the URL
         parsed = urlparse(url)
-        # Replace special characters and create a unique filename
+
         safe_filename = re.sub(r'[^\w\-_.]', '_', parsed.path.strip('/'))
         if not safe_filename:
             safe_filename = 'index'
         
-        # Add domain prefix to avoid conflicts
         domain_prefix = re.sub(r'[^\w\-_.]', '_', parsed.netloc)
         filename = f"{domain_prefix}_{safe_filename}.html"
         
-        # Ensure unique filename if it already exists
         counter = 1
         original_filename = filename
         while os.path.exists(os.path.join(config.RAW_HTML_DIR, filename)):
@@ -190,15 +186,12 @@ class Crawler:
         
         self.logger.info(f"Retrying {url} (attempt {retry_count + 1}/{max_retries})")
         
-        if is_session_error:
-            self.logger.warning("Session error detected, restarting WebDriver")
-            if not self.restart_selenium():
-                self.logger.error(f"Failed to restart WebDriver for {url}")
-                return False
-            time.sleep(3)
-        else:
-            time.sleep(5)
-        
+        self.logger.warning("Session error detected, restarting WebDriver")
+        if not self.restart_selenium():
+            self.logger.error(f"Failed to restart WebDriver for {url}")
+            return False
+        time.sleep(3)
+    
         self.crawl_page(url, retry_count + 1, max_retries)
         return True
     
@@ -240,12 +233,10 @@ class Crawler:
             # Extract URLs from the HTML content
             urls = self.extract_urls_from_html(html_content, url)
             
-            # Check if current URL is a recipe URL
             if self.is_recipe_url(url):
                 self.recipe_urls.add(url)
                 self.logger.info(f"Found recipe: {url}")
             
-            # Add new URLs to the queue (BFS)
             new_urls = sum(1 for found_url in urls if found_url not in self.visited_urls)
             for found_url in urls:
                 if found_url not in self.visited_urls:
