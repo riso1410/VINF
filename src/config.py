@@ -58,13 +58,6 @@ CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 MAX_RETRIES = 3
 
 # ============================================================================
-# SCRAPER SETTINGS
-# ============================================================================
-
-# Scraping behavior
-SCRAPER_PROGRESS_INTERVAL = 10  # Log progress every N recipes
-
-# ============================================================================
 # INDEXER SETTINGS
 # ============================================================================
 
@@ -94,7 +87,7 @@ STOP_WORDS = {
 # ============================================================================
 
 # Search behavior
-DEFAULT_TOP_K = 10  # Default number of search results to return
+DEFAULT_TOP_K = 1  # Default number of search results to return
 
 # IDF calculation
 IDF_SMOOTHING = 1  # Smoothing factor to avoid division by zero

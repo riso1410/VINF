@@ -1,5 +1,4 @@
 requests
-scrapy
 urllib3
 selenium
 tiktoken

@@ -97,9 +97,23 @@ class RecipeScraper:
         """Extract recipe title"""
         return self.clean_text(json_data.get('name', ''))
 
-    def extract_description(self, json_data: dict) -> str:
+    def extract_description(self, json_data: dict, html_content: str = "") -> str:
         """Extract recipe description"""
-        return self.clean_text(json_data.get('description', ''))
+        description = self.clean_text(json_data.get('description', ''))
+        
+        if not description and html_content:
+            og_desc_pattern = r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']'
+            og_match = re.search(og_desc_pattern, html_content, re.IGNORECASE)
+            if og_match:
+                description = self.clean_text(og_match.group(1))
+            
+            if not description:
+                desc_pattern = r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']'
+                desc_match = re.search(desc_pattern, html_content, re.IGNORECASE)
+                if desc_match:
+                    description = self.clean_text(desc_match.group(1))
+        
+        return description
 
     def extract_ingredients(self, json_data: dict) -> List[str]:
         """Extract ingredients from JSON-LD structured data"""
@@ -256,7 +270,7 @@ class RecipeScraper:
             url=url,
             html_file=normalized_html_file,
             title=self.extract_title(json_data),
-            description=self.extract_description(json_data),
+            description=self.extract_description(json_data, html_content),
             method=self.extract_method(html_content, json_data),
             ingredients=self.extract_ingredients(json_data),
             prep_time=self.extract_prep_time(json_data),
@@ -293,7 +307,7 @@ class RecipeScraper:
         
         parts = name_without_ext.split('_')
         
-        if len(parts) < 3:
+        if len(parts) != 3:
             return False
         
         try:
@@ -301,7 +315,7 @@ class RecipeScraper:
         except ValueError:
             return False
         
-        if recipes_index >= len(parts) - 1:
+        if recipes_index != 1:
             return False
         
         if len(parts) - recipes_index != 2:
@@ -315,18 +329,14 @@ class RecipeScraper:
             self.logger.error(f"HTML directory not found: {self.html_dir}")
             return
         
-        # Get all HTML files from the directory
         all_html_files = [f for f in os.listdir(self.html_dir) if f.endswith('.html')]
         
-        # Filter to only include files that represent valid /recipes/name URLs
         html_files = [f for f in all_html_files if self.is_valid_recipe_file(f)]
         
         if not html_files:
             self.logger.error(f"No valid recipe HTML files found in: {self.html_dir}")
             return
-        
-        self.logger.info(f"Found {len(html_files)} valid recipe files out of {len(all_html_files)} total HTML files")
-        
+                
         # Clear the recipes file if it exists to start fresh
         if os.path.exists(self.recipes_file):
             os.remove(self.recipes_file)
@@ -347,10 +357,7 @@ class RecipeScraper:
             if metadata:
                 self.save_to_jsonl(metadata)
                 successful_count += 1
-                
-                if successful_count % config.SCRAPER_PROGRESS_INTERVAL == 0:
-                    self.logger.info(f"Successfully processed {successful_count} recipes so far...")
-            
+                            
             processed_count += 1
                     
         self.logger.info(f"Scraping completed. Processed {processed_count} HTML files, successfully extracted {successful_count} recipes")

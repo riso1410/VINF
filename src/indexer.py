@@ -22,19 +22,30 @@ def normalize_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def tokenize_text(text: str, min_word_length: int, max_word_length: int, stop_words: set) -> List[str]:
-    """Tokenize text with filtering."""
+def tokenize_text(text: str, min_word_length: int, max_word_length: int, stop_words_broadcast) -> List[str]:
+    """Tokenize text with filtering using broadcast variable for stop_words."""
     if not text: 
         return []
     normalized = normalize_text(text)
     tokens = normalized.split()
+    stop_words = stop_words_broadcast.value
     return [token for token in tokens if min_word_length <= len(token) <= max_word_length and token not in stop_words and not token.isdigit()]
 
-def count_tiktoken_tokens(text: str) -> int:
-    """Count tokens using tiktoken encoding."""
+# Cache tiktoken encoding globally to avoid reloading on every call
+TIKTOKEN_ENCODING = None
+
+def get_tiktoken_encoding():
+    """Get cached tiktoken encoding."""
+    global TIKTOKEN_ENCODING
+    if TIKTOKEN_ENCODING is None:
+        TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+    return TIKTOKEN_ENCODING
+
+def count_tokens(text: str) -> int:
+    """Count tokens using cached tiktoken encoding."""
     if not text:
         return 0
-    encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = get_tiktoken_encoding()
     return len(encoding.encode(text))
 
 @dataclass
@@ -86,7 +97,6 @@ class RecipeIndexer:
         self.min_word_length = config.MIN_WORD_LENGTH
         self.max_word_length = config.MAX_WORD_LENGTH
         self.stop_words = config.STOP_WORDS
-        self.tokenizer_encoding = tiktoken.get_encoding("cl100k_base")
         
         # Set Python executable for PySpark workers
         os.environ['PYSPARK_PYTHON'] = sys.executable
@@ -96,18 +106,15 @@ class RecipeIndexer:
             .appName("RecipeIndexer") \
             .master("local[*]") \
             .config("spark.python.worker.faulthandler.enabled", "true") \
-            .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
+            .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+            .config("spark.driver.memory", "4g") \
+            .config("spark.executor.memory", "4g") \
+            .config("spark.ui.port", "4050") \
             .getOrCreate()
+        
+        self.stop_words_broadcast = self.spark.sparkContext.broadcast(self.stop_words)
 
-    def normalize_text(self, text: str) -> str:
-        """Instance method for backward compatibility."""
-        return normalize_text(text)
-
-    def tokenize(self, text: str) -> List[str]:
-        """Instance method for backward compatibility."""
-        return tokenize_text(text, self.min_word_length, self.max_word_length, self.stop_words)
-
-    def _calculate_html_size(self, df) -> tuple:
+    def _calculate_html_size(self, df) -> int:
         """Calculate total size of HTML files."""
         html_files_df = df.select("html_file").distinct()
         html_file_paths = [row.html_file for row in html_files_df.collect() if row.html_file]
@@ -118,14 +125,15 @@ class RecipeIndexer:
             if path and os.path.exists(path)
         )
         
-        return len(html_file_paths), total_size
+        return total_size
 
-    def save_metadata(self, total_documents: int, vocabulary_size: int, total_html_size: int):
+    def save_metadata(self, total_documents: int, vocabulary_size: int, total_html_size: int, total_tokens: int):
         """Save index metadata to file."""
         metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
         metadata = {
             "total_documents": total_documents,
             "vocabulary_size": vocabulary_size,
+            "total_tokens": total_tokens,
             "size_bytes": total_html_size,
             "size_mb": round(total_html_size / (1024 * 1024), 2)
         }
@@ -180,7 +188,7 @@ class RecipeIndexer:
             self.logger.error(f"Recipes file not found: {self.recipes_file}")
             return
         
-        self.logger.info(f"Building Spark-based inverted index from {self.recipes_file} using DataFrames")
+        self.logger.info(f"Building Spark-based inverted index from {self.recipes_file}")
 
         # Read data and add doc_id
         uuid_udf = F.udf(lambda: str(uuid4()), T.StringType())
@@ -188,9 +196,9 @@ class RecipeIndexer:
         df.cache()
 
         total_documents = df.count()
-        html_files_count, total_html_size = self._calculate_html_size(df)
+        total_html_size = self._calculate_html_size(df)
         
-        self.logger.info(f"Total HTML files: {html_files_count}, Total size: {total_html_size:,} bytes ({total_html_size / (1024*1024):.2f} MB)")
+        self.logger.info(f"Total documents indexed: {total_documents}, Total HTML size: {total_html_size:,} bytes ({total_html_size / (1024*1024):.2f} MB)")
 
         # Create full text and tokenize
         df = df.withColumn("full_text", F.concat_ws(" ",
@@ -200,11 +208,12 @@ class RecipeIndexer:
             F.col("method")
         ))
 
+        # Use broadcast variable for stop_words to reduce serialization overhead
         tokenize_udf = F.udf(
             partial(tokenize_text, 
                     min_word_length=self.min_word_length, 
                     max_word_length=self.max_word_length, 
-                    stop_words=self.stop_words),
+                    stop_words_broadcast=self.stop_words_broadcast),
             T.ArrayType(T.StringType())
         )
         df = df.withColumn("tokens", tokenize_udf(F.col("full_text")))
@@ -226,28 +235,34 @@ class RecipeIndexer:
         inverted_index_df.cache()
         vocabulary_size = inverted_index_df.count()
 
-        tiktoken_len_udf = F.udf(count_tiktoken_tokens, T.IntegerType())
+        # Use cached tiktoken encoding for better performance
+        tiktoken_len_udf = F.udf(count_tokens, T.IntegerType())
 
         doc_stats_df = df.withColumn("word_count", F.size(F.col("tokens"))) \
                          .withColumn("unique_words", F.size(F.array_distinct(F.col("tokens")))) \
                          .withColumn("token_count", tiktoken_len_udf(F.col("full_text"))) \
                          .select(
                              "doc_id", "url", "title", "word_count", "unique_words", "token_count",
-                             "chef", "difficulty", "prep_time", "servings"
+                               "chef", "difficulty", "prep_time", "servings"
                          )
+        
+        total_tokens = doc_stats_df.agg(F.sum("token_count")).collect()[0][0] or 0
         
         # Collect results
         doc_stats_list = doc_stats_df.collect()
         inverted_index_list = inverted_index_df.collect()
 
         # Save all outputs
-        self.save_metadata(total_documents, vocabulary_size, total_html_size)
+        self.save_metadata(total_documents, vocabulary_size, total_html_size, total_tokens)
         self.save_document_mapping(doc_stats_list)
         self.save_inverted_index(inverted_index_list)
 
         # Cleanup
         df.unpersist()
         inverted_index_df.unpersist()
+        
+        # Unpersist broadcast variable to free memory
+        self.stop_words_broadcast.unpersist()
 
         self.logger.info("Index building completed successfully!")
         self.spark.stop()
