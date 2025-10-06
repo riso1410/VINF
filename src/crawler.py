@@ -42,6 +42,8 @@ class Crawler:
         self.domain = urlparse(start_url).netloc
         self.urls_to_visit = deque([start_url])
         self.visited_urls = set()
+        self.downloaded_recipes = set()
+        self.recipes_saved = 0  
         
         self.driver = None
         self.pages_crawled_since_restart = 0
@@ -109,7 +111,9 @@ class Crawler:
                     checkpoint = pickle.load(f)
                     self.urls_to_visit = deque(checkpoint.get('urls_to_visit', [self.start_url]))
                     self.visited_urls = checkpoint.get('visited_urls', set())
-                self.logger.info(f"Loaded checkpoint: {len(self.visited_urls)} pages visited")
+                    self.downloaded_recipes = checkpoint.get('downloaded_recipes', set())
+                    self.recipes_saved = len(self.downloaded_recipes)
+                self.logger.info(f"Loaded checkpoint: {len(self.visited_urls)} pages visited, {self.recipes_saved} recipes downloaded")
             except Exception as e:
                 self.logger.warning(f"Could not load checkpoint: {e}")
     
@@ -117,7 +121,8 @@ class Crawler:
         """Save current crawler state to checkpoint file."""
         checkpoint = {
             'urls_to_visit': list(self.urls_to_visit),
-            'visited_urls': self.visited_urls
+            'visited_urls': self.visited_urls,
+            'downloaded_recipes': self.downloaded_recipes
         }
         with open(self.checkpoint_file, 'wb') as f:
             pickle.dump(checkpoint, f)
@@ -155,9 +160,31 @@ class Crawler:
         
         return filepath
     
+    def is_recipe_url(self, url):
+        """
+        Check if URL is a recipe page based on URL pattern.
+        
+        Args:
+            url: URL to validate
+            
+        Returns:
+            bool: True if URL matches recipe pattern
+        """
+        parsed = urlparse(url)
+        path_parts = [p for p in parsed.path.strip('/').split('/') if p]
+
+        if len(path_parts) != 2:
+            return False
+        
+        if path_parts[0] != 'recipes':
+            return False
+        
+        return True
+    
     def extract_urls_from_html(self, html_content, base_url):
         """
         Extract URLs from HTML content using regex patterns.
+        Extracts URLs to continue crawling, but only recipe URLs will be saved.
         
         Args:
             html_content: HTML content to parse
@@ -251,18 +278,27 @@ class Crawler:
             
             html_content = self.driver.page_source
             
-            saved_path = self.save_html_content(url, html_content)
-            if saved_path:
-                self.logger.info(f"Saved: {url} -> {saved_path}")
+            if self.is_recipe_url(url):
+                if url not in self.downloaded_recipes:
+                    saved_path = self.save_html_content(url, html_content)
+                    if saved_path:
+                        self.downloaded_recipes.add(url)
+                        self.recipes_saved += 1
+                        self.logger.info(f"Saved recipe {self.recipes_saved}: {url}")
             
             urls = self.extract_urls_from_html(html_content, url)
             
             new_urls = sum(1 for found_url in urls if found_url not in self.visited_urls)
+            new_recipe_urls = sum(1 for found_url in urls if found_url not in self.visited_urls and self.is_recipe_url(found_url))
+            
             for found_url in urls:
                 if found_url not in self.visited_urls:
                     self.urls_to_visit.append(found_url)
             
-            self.logger.info(f"Found {new_urls} new URLs on {url}")
+            if new_recipe_urls > 0:
+                self.logger.info(f"Found {new_urls} new URLs ({new_recipe_urls} recipes) on {url}")
+            else:
+                self.logger.info(f"Found {new_urls} new URLs (0 recipes) on {url}")
             
         except TimeoutException:
             self.logger.error(f"Selenium timeout for {url}")
@@ -303,7 +339,7 @@ class Crawler:
             
             if crawled_count % 10 == 0:
                 self.save_checkpoint()
-                self.logger.info(f"Progress: {crawled_count} pages crawled.")
+                self.logger.info(f"Progress: {crawled_count} pages crawled, {self.recipes_saved} recipes saved")
             
             time.sleep(random.uniform(2, 5))
         
@@ -311,6 +347,7 @@ class Crawler:
         self.save_checkpoint()
         self.logger.info("Crawling completed!")
         self.logger.info(f"Total pages visited: {len(self.visited_urls)}")
+        self.logger.info(f"Total recipes saved: {self.recipes_saved}")
 
 
 def main():
