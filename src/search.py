@@ -2,8 +2,8 @@
 Recipe Search Engine with BM25 and TF-IDF Search Methods
 
 Features:
-- BM25 fulltext search algorithm
-- TF-IDF cosine similarity search algorithm
+- TF search with Robertson IDF: idf = log((N - df + 0.5) / (df + 0.5)), score = tf * idf
+- TF search with classic IDF: idf = log(N / df), score = tf * idf
 """
 
 import os
@@ -18,7 +18,20 @@ import config
 
 @dataclass
 class SearchResult:
-    """Represents a single search result"""
+    """
+    Represents a single search result.
+    
+    Attributes:
+        doc_id: Unique document identifier
+        url: Document URL
+        title: Recipe title
+        score: Relevance score
+        chef: Chef name (optional)
+        difficulty: Difficulty level (optional)
+        prep_time: Preparation time (optional)
+        servings: Number of servings (optional)
+        word_count: Total word count in document (optional)
+    """
     doc_id: str
     url: str
     title: str
@@ -28,14 +41,14 @@ class SearchResult:
     prep_time: str = ""
     servings: str = ""
     word_count: int = 0
-    
-    def __repr__(self):
-        return f"SearchResult(title='{self.title}', score={self.score:.4f}, url='{self.url}')"
 
 
 class RecipeSearchEngine:
     """
     Search engine with BM25 and TF-IDF search algorithms.
+    
+    Robertson IDF: idf = log((N - df + 0.5) / (df + 0.5))
+    Classic IDF: idf = log(N / df)
     """
     
     def __init__(self, index_dir: str = None, log_level: int = None):
@@ -52,27 +65,17 @@ class RecipeSearchEngine:
         os.makedirs(config.LOGS_DIR, exist_ok=True)
         self.logger = config.setup_logging(config.SEARCH_LOG, log_level)
         
-        # Index data structures
-        self.inverted_index: Dict[str, Dict] = {}  # term -> {df, postings}
-        self.document_stats: Dict[str, Dict] = {}  # doc_id -> stats
+        self.inverted_index: Dict[str, Dict] = {}
+        self.document_stats: Dict[str, Dict] = {}
         self.total_documents: int = 0
         self.vocabulary_size: int = 0
-        self.avg_doc_length: float = 0.0
         
-        # BM25 parameters
-        self.k1 = 1.5  # Term frequency saturation parameter
-        self.b = 0.75  # Length normalization parameter
+        self.load_index()
         
-        # Load index
-        self._load_index()
-        
-        self.logger.info(f"Search engine initialized with {self.total_documents} documents and {self.vocabulary_size} terms")
+        self.logger.info(f"Search engine initialized: {self.total_documents} docs, {self.vocabulary_size} terms")
     
-    def _load_index(self):
+    def load_index(self):
         """Load the inverted index and document statistics from disk."""
-        self.logger.info("Loading search index...")
-        
-        # Load metadata
         metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r', encoding='utf-8') as f:
@@ -80,7 +83,6 @@ class RecipeSearchEngine:
                 self.total_documents = metadata.get("total_documents", 0)
                 self.vocabulary_size = metadata.get("vocabulary_size", 0)
         
-        # Load document stats
         mapping_path = os.path.join(self.index_dir, "mapping.jsonl")
         if os.path.exists(mapping_path):
             with open(mapping_path, 'r', encoding='utf-8') as f:
@@ -88,12 +90,6 @@ class RecipeSearchEngine:
                     doc = json.loads(line)
                     self.document_stats[doc["doc_id"]] = doc
         
-        # Calculate average document length
-        if self.document_stats:
-            total_length = sum(doc["word_count"] for doc in self.document_stats.values())
-            self.avg_doc_length = total_length / len(self.document_stats)
-        
-        # Load inverted index
         index_path = os.path.join(self.index_dir, "index.jsonl")
         if os.path.exists(index_path):
             with open(index_path, 'r', encoding='utf-8') as f:
@@ -103,11 +99,17 @@ class RecipeSearchEngine:
                         "df": entry["document_frequency"],
                         "postings": entry["postings"]
                     }
-        
-        self.logger.info(f"Loaded {len(self.inverted_index)} terms and {len(self.document_stats)} documents")
     
-    def _normalize_text(self, text: str) -> str:
-        """Normalize text for searching."""
+    def normalize_text(self, text: str) -> str:
+        """
+        Normalize text for searching.
+        
+        Args:
+            text: Input text to normalize
+            
+        Returns:
+            Normalized lowercase text with only alphanumeric characters
+        """
         if not text:
             return ""
         text = text.lower()
@@ -115,11 +117,19 @@ class RecipeSearchEngine:
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenize and filter query text."""
+    def tokenize(self, text: str) -> List[str]:
+        """
+        Tokenize and filter query text.
+        
+        Args:
+            text: Input text to tokenize
+            
+        Returns:
+            List of filtered tokens
+        """
         if not text:
             return []
-        normalized = self._normalize_text(text)
+        normalized = self.normalize_text(text)
         tokens = normalized.split()
         return [
             token for token in tokens
@@ -128,48 +138,42 @@ class RecipeSearchEngine:
             and not token.isdigit()
         ]
     
-    def _calculate_bm25_score(self, term: str, doc_id: str, query_terms: List[str]) -> float:
+    def calculate_bm25_score(self, term: str, doc_id: str) -> float:
         """
-        Calculate BM25 score for a term in a document.
+        Calculate BM25 score for a term in a document using Robertson IDF.
         
-        BM25 Formula:
-        score = IDF(term) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_len / avg_doc_len)))
+        Formula:
+            idf_robertson = log((N - df + 0.5) / (df + 0.5))
+            score = idf_robertson * tf
         
         Args:
             term: Search term
             doc_id: Document ID
-            query_terms: All query terms for IDF calculation
             
         Returns:
-            BM25 score
+            BM25 score for the term in the document
         """
         if term not in self.inverted_index:
             return 0.0
         
-        # Get term frequency in document
         postings = self.inverted_index[term]["postings"]
         if doc_id not in postings:
             return 0.0
         
         tf = postings[doc_id]
-        
-        # Get document frequency and calculate IDF
         df = self.inverted_index[term]["df"]
-        idf = math.log((self.total_documents - df + 0.5) / (df + 0.5) + 1.0)
+        idf_robertson = math.log((self.total_documents - df + 0.5) / (df + 0.5))
         
-        # Get document length
-        doc_length = self.document_stats[doc_id]["word_count"]
-        
-        # Calculate BM25 score
-        numerator = tf * (self.k1 + 1)
-        denominator = tf + self.k1 * (1 - self.b + self.b * (doc_length / self.avg_doc_length))
-        
-        score = idf * (numerator / denominator)
+        score = idf_robertson * tf
         return score
     
     def search_bm25(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
         """
-        Perform BM25 fulltext search.
+        Perform BM25 search using Robertson IDF.
+        
+        Formula:
+            idf_robertson = log((N - df + 0.5) / (df + 0.5))
+            score = idf_robertson * tf
         
         Args:
             query: Search query string
@@ -177,35 +181,26 @@ class RecipeSearchEngine:
             
         Returns:
             List of SearchResult objects ranked by BM25 score
-        """        
-        # Tokenize query
-        query_terms = self._tokenize(query)
+        """
+        query_terms = self.tokenize(query)
         if not query_terms:
-            self.logger.warning("Query resulted in no valid terms after tokenization")
             return []
         
-        self.logger.info(f"Searching for query: '{query}' (tokens: {query_terms})")
-        
-        # Find candidate documents (documents containing at least one query term)
         candidate_docs: Set[str] = set()
         for term in query_terms:
             if term in self.inverted_index:
                 candidate_docs.update(self.inverted_index[term]["postings"].keys())
         
         if not candidate_docs:
-            self.logger.info("No documents found matching query terms")
             return []
         
-        # Calculate BM25 scores for all candidate documents
         doc_scores: Dict[str, float] = {}
         for doc_id in candidate_docs:
-            score = sum(self._calculate_bm25_score(term, doc_id, query_terms) for term in query_terms)
+            score = sum(self.calculate_bm25_score(term, doc_id) for term in query_terms)
             doc_scores[doc_id] = score
         
-        # Sort by score and get top-k
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         
-        # Create SearchResult objects
         results = []
         for doc_id, score in sorted_docs:
             doc_info = self.document_stats[doc_id]
@@ -221,20 +216,15 @@ class RecipeSearchEngine:
                 word_count=doc_info.get("word_count", 0)
             ))
         
-        self.logger.info(f"Found {len(results)} results for query '{query}'")
         return results
     
     def search_tfidf(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
         """
-        Perform TF-IDF search using raw TF-IDF scoring.
+        Perform TF-IDF search using classic IDF.
         
-        This method:
-        1. Builds TF-IDF vectors for query and documents
-        2. Calculates dot product (sum of TF-IDF scores) for ranking
-        3. Ranks results based on cumulative TF-IDF scores (unbounded)
-        
-        Unlike cosine similarity (which is capped at 1.0), this method returns
-        raw TF-IDF scores that can be higher, similar to BM25 scoring behavior.
+        Formula:
+            idf_classic = log(N / df)
+            score = tf * idf_classic
         
         Args:
             query: Search query string
@@ -243,30 +233,22 @@ class RecipeSearchEngine:
         Returns:
             List of SearchResult objects ranked by TF-IDF score
         """
-        # Tokenize query
-        query_terms = self._tokenize(query)
+        query_terms = self.tokenize(query)
         if not query_terms:
-            self.logger.warning("Query resulted in no valid terms after tokenization")
             return []
         
-        self.logger.info(f"Searching for query: '{query}' (tokens: {query_terms})")
-        
-        # Find candidate documents (documents containing at least one query term)
         candidate_docs: Set[str] = set()
         for term in query_terms:
             if term in self.inverted_index:
                 candidate_docs.update(self.inverted_index[term]["postings"].keys())
         
         if not candidate_docs:
-            self.logger.info("No documents found matching query terms")
             return []
         
-        # Calculate TF-IDF scores for each candidate document
         doc_scores: Dict[str, float] = {}
         for doc_id in candidate_docs:
             score = 0.0
             
-            # For each query term, calculate its contribution to the score
             for term in query_terms:
                 if term not in self.inverted_index:
                     continue
@@ -275,25 +257,17 @@ class RecipeSearchEngine:
                 if doc_id not in postings:
                     continue
                 
-                # Get term frequency in document
                 tf = postings[doc_id]
-                
-                # Calculate IDF
                 df = self.inverted_index[term]["df"]
-                idf = math.log((self.total_documents + 1) / (df + 1)) + 1.0
+                idf_classic = math.log(self.total_documents / df)
                 
-                # TF-IDF score contribution: tf * idf
-                # Using logarithmic TF normalization for better results
-                tf_normalized = 1.0 + math.log(tf) if tf > 0 else 0.0
-                score += tf_normalized * idf
+                score += tf * idf_classic
             
             if score > 0:
                 doc_scores[doc_id] = score
         
-        # Sort by score and get top-k
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         
-        # Create SearchResult objects
         results = []
         for doc_id, score in sorted_docs:
             doc_info = self.document_stats[doc_id]
@@ -309,7 +283,6 @@ class RecipeSearchEngine:
                 word_count=doc_info.get("word_count", 0)
             ))
         
-        self.logger.info(f"Found {len(results)} results for query '{query}'")
         return results
     
     def search(self, query: str, method: str = 'bm25', top_k: int = None) -> List[SearchResult]:
@@ -366,50 +339,30 @@ class RecipeSearchEngine:
 
 
 def main():
-    """Main function demonstrating search capabilities."""
+    """
+    Main function demonstrating search capabilities.
     
-    # Initialize search engine
-    print("Initializing Recipe Search Engine...")
+    Provides examples of BM25 and TF-IDF search, followed by an interactive
+    search mode where users can choose their preferred search method.
+    """
     search_engine = RecipeSearchEngine()
     
-    # Example 1: BM25 search
-    print("\n" + "="*80)
-    print("Example 1: BM25 Fulltext Search")
-    print("="*80)
-    query = "chicken pasta garlic"
-    results = search_engine.search_bm25(query, top_k=5)
-    search_engine.display_results(results)
-    
-    # Example 2: TF-IDF search
-    print("\n" + "="*80)
-    print("Example 2: TF-IDF Cosine Similarity Search")
-    print("="*80)
-    query = "chocolate cake dessert"
-    results = search_engine.search_tfidf(query, top_k=5)
-    search_engine.display_results(results)
-    
-    # Interactive search
-    print("\n" + "="*80)
-    print("Interactive Search Mode")
-    print("="*80)
     print("\nSelect search method:")
-    print("  1. BM25 (Best Match 25)")
-    print("  2. TF-IDF (Cosine Similarity)")
+    print("  1. BM25 (Robertson IDF)")
+    print("  2. TF-IDF (Classic IDF)")
     print()
     
-    # Get search method selection
     method_choice = input("Choose search method (1-2): ").strip()
     
-    search_method = 'bm25'
     if method_choice == '1':
         search_method = 'bm25'
-        print("\nUsing: BM25")
+        print("\nUsing: BM25 (Robertson IDF)")
     elif method_choice == '2':
         search_method = 'tfidf'
-        print("\nUsing: TF-IDF Cosine Similarity")
+        print("\nUsing: TF-IDF (Classic IDF)")
     else:
         search_method = 'bm25'
-        print("\nInvalid choice. Using: BM25")
+        print("\nInvalid choice. Using: BM25 (Robertson IDF)")
     
     print("\nEnter search queries (or 'quit' to exit, 'change' to change search method)")
     print()
@@ -423,25 +376,24 @@ def main():
             
             if query.lower() == 'change':
                 print("\nSelect search method:")
-                print("  1. BM25 (Best Match 25)")
-                print("  2. TF-IDF (Cosine Similarity)")
+                print("  1. BM25 (Robertson IDF)")
+                print("  2. TF-IDF (Classic IDF)")
                 print()
                 
                 method_choice = input("Choose search method (1-2): ").strip()
                 
                 if method_choice == '1':
                     search_method = 'bm25'
-                    print("\nUsing: BM25")
+                    print("\nUsing: BM25 (Robertson IDF)")
                 elif method_choice == '2':
                     search_method = 'tfidf'
-                    print("\nUsing: TF-IDF Cosine Similarity")
+                    print("\nUsing: TF-IDF (Classic IDF)")
                 else:
                     search_method = 'bm25'
-                    print("\nInvalid choice. Using: BM25")
+                    print("\nInvalid choice. Using: BM25 (Robertson IDF)")
                 print()
                 continue
             
-            # Perform search with selected method
             results = search_engine.search(query, method=search_method, top_k=config.DEFAULT_TOP_K)
             search_engine.display_results(results)
             
