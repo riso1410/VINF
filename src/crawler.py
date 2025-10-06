@@ -122,26 +122,6 @@ class Crawler:
         with open(self.checkpoint_file, 'wb') as f:
             pickle.dump(checkpoint, f)
     
-    def is_valid_url(self, url):
-        """
-        Check if URL is valid for crawling.
-        
-        Args:
-            url: URL to validate
-            
-        Returns:
-            bool: True if URL should be crawled
-        """
-        parsed = urlparse(url)
-        
-        if parsed.netloc != self.domain:
-            return False
-            
-        if any(url.lower().endswith(ext) for ext in config.SKIP_EXTENSIONS):
-            return False
-            
-        return True
-    
     def save_html_content(self, url, html_content):
         """
         Save HTML content to file with unique filename.
@@ -199,11 +179,17 @@ class Crawler:
             
             absolute_url = urljoin(base_url, match)
             
-            # Remove fragment (anchor) but keep query parameters
             clean_url = absolute_url.split('#')[0]
             
-            if self.is_valid_url(clean_url):
-                urls.add(clean_url)
+            parsed = urlparse(clean_url)
+            
+            if parsed.netloc != self.domain:
+                continue
+            
+            if any(clean_url.lower().endswith(ext) for ext in config.SKIP_EXTENSIONS):
+                continue
+            
+            urls.add(clean_url)
         
         return urls
     
