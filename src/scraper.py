@@ -1,20 +1,15 @@
-"""
-Recipe scraper for extracting structured data from HTML files.
-Parses JSON-LD structured data and HTML patterns to extract recipe information.
-"""
-
 import os
 import json
 import re
-import html
 from dataclasses import dataclass, field
 from typing import List, Optional
+from markitdown import MarkItDown
+
 import config
 
 
 @dataclass
 class RecipeMetadata:
-    """Data class representing structured recipe information."""
     url: str = ""
     html_file: str = ""
     title: str = ""
@@ -28,19 +23,8 @@ class RecipeMetadata:
 
 
 class RecipeScraper:
-    """
-    Scraper for extracting recipe data from HTML files.
-    Supports JSON-LD structured data and HTML pattern matching.
-    """
     
     def __init__(self, html_dir: str = None, output_dir: str = None):
-        """
-        Initialize the recipe scraper.
-        
-        Args:
-            html_dir: Directory containing HTML files to scrape
-            output_dir: Directory to save scraped recipe data
-        """
         self.html_dir = html_dir if html_dir is not None else config.RAW_HTML_DIR
         self.output_dir = output_dir if output_dir is not None else config.SCRAPED_DIR
         self.recipes_file = os.path.join(self.output_dir, "recipes.jsonl")
@@ -51,271 +35,104 @@ class RecipeScraper:
         self.logger = config.setup_logging(config.SCRAPER_LOG)
 
     def clean_text(self, text: str) -> str:
-        """
-        Clean text by removing HTML tags and normalizing whitespace.
-        
-        Args:
-            text: Text to clean
-            
-        Returns:
-            str: Cleaned text
-        """
         if not text:
             return ""
         
-        text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<[^>]+>', '', text)
-        text = html.unescape(text)
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
         
         return text
 
-    def extract_json_ld_recipe(self, html_content: str) -> dict:
-        """
-        Extract recipe from JSON-LD structured data.
+    def extract_title(self, markdown_content: str) -> str:
+        pattern = r'^# (.+)$'
+        match = re.search(pattern, markdown_content, re.MULTILINE)
+        if match:
+            return self.clean_text(match.group(1))
         
-        Args:
-            html_content: HTML content to parse
-            
-        Returns:
-            dict: Recipe data from JSON-LD or empty dict
-        """
-        pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
-        matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
-        
-        for match in matches:
-            clean_match = match.strip()
-            try:
-                data = json.loads(clean_match)
-                if data and data.get('@type') == 'Recipe':
-                    return data
-            except json.JSONDecodeError:
-                continue
-        
-        return {}
+        return ""
 
-    def extract_recipe_from_js_match(self, js_text: str) -> dict:
-        """
-        Extract recipe data from JavaScript text match.
+    def extract_description(self, markdown_content: str) -> str:
+        pattern = r'\[Rate\]\(#vote\).*?(?:\n\s*\* !\[A fallback image for Food Network UK\][^\n]*)+\s*\n\s*(.*?)(?=\n\nFeatured In:)'
+        match = re.search(pattern, markdown_content, re.DOTALL)
+        if match:
+            description = match.group(1).strip()
+            # Clean up any remaining noise
+            description = re.sub(r'!\[.*?\]\(.*?\)', '', description)  # Remove images
+            # Remove any links
+            description = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', description)
+            return self.clean_text(description)
         
-        Args:
-            js_text: JavaScript text containing potential recipe data
-            
-        Returns:
-            dict: Recipe data or empty dict
-        """
-        try:
-            data = json.loads(js_text)
-            if data and isinstance(data, dict):
-                if data.get('@type') == 'Recipe':
-                    return data
-                
-                recipe = self.find_recipe_in_nested_object(data)
-                if recipe:
-                    return recipe
-        except json.JSONDecodeError:
-            pass
-        
-        return {}
-                
-    def find_recipe_in_nested_object(self, obj: dict) -> dict:
-        """
-        Recursively search for recipe data in nested objects.
-        
-        Args:
-            obj: Object to search
-            
-        Returns:
-            dict: Recipe data or empty dict
-        """
-        if isinstance(obj, dict):
-            if obj.get('@type') == 'Recipe':
-                return obj
-        return {}
+        return ""
 
-    def extract_title(self, json_data: dict) -> str:
-        """
-        Extract recipe title.
-        
-        Args:
-            json_data: Recipe JSON-LD data
-            
-        Returns:
-            str: Recipe title
-        """
-        return self.clean_text(json_data.get('name', ''))
-
-    def extract_description(self, json_data: dict, html_content: str = "") -> str:
-        """
-        Extract recipe description.
-        
-        Args:
-            json_data: Recipe JSON-LD data
-            html_content: HTML content for fallback extraction
-            
-        Returns:
-            str: Recipe description
-        """
-        description = self.clean_text(json_data.get('description', ''))
-        
-        if not description and html_content:
-            og_desc_pattern = r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']'
-            og_match = re.search(og_desc_pattern, html_content, re.IGNORECASE)
-            if og_match:
-                description = self.clean_text(og_match.group(1))
-            
-            if not description:
-                desc_pattern = r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']'
-                desc_match = re.search(desc_pattern, html_content, re.IGNORECASE)
-                if desc_match:
-                    description = self.clean_text(desc_match.group(1))
-        
-        return description
-
-    def extract_ingredients(self, json_data: dict) -> List[str]:
-        """
-        Extract ingredients from JSON-LD structured data.
-        
-        Args:
-            json_data: Recipe JSON-LD data
-            
-        Returns:
-            List[str]: List of ingredient strings
-        """
-        if json_data and 'recipeIngredient' in json_data:
-            ingredients = self.filter_ingredients(json_data['recipeIngredient'])
-            return ingredients
-        
-        return []
-    
-    def filter_ingredients(self, recipe_ingredients: list) -> List[str]:
-        """
-        Filter and clean ingredient list.
-        
-        Args:
-            recipe_ingredients: Raw ingredient list
-            
-        Returns:
-            List[str]: Filtered ingredient list
-        """
+    def extract_ingredients(self, markdown_content: str) -> List[str]:
         ingredients = []
-        for ingredient in recipe_ingredients:
-            ingredient_text = str(ingredient).strip()
+        
+        pattern = r'## Ingredients\s*\n(.*?)(?=\n## |\n\nRead More|$)'
+        match = re.search(pattern, markdown_content, re.DOTALL | re.IGNORECASE)
+        
+        if match:
+            ingredients_section = match.group(1)
+            ingredient_pattern = r'\* \[ \] (.+?)(?=\n|$)'
+            matches = re.findall(ingredient_pattern, ingredients_section)
             
-            if (ingredient_text and 
-                not ingredient_text.endswith(':') and 
-                not ingredient_text.startswith('For the')):
-                ingredients.append(ingredient_text)
+            for match in matches:
+                ingredient_text = self.clean_text(match)
+                if not ingredient_text.endswith(':'):
+                    ingredients.append(ingredient_text)
         
         return ingredients
     
-    def extract_method(self, html_content: str, json_data: dict) -> str:
-        """
-        Extract recipe method as clean text.
+    def extract_method(self, markdown_content: str) -> str:
+        pattern = r'## Method\s*\n(.*?)(?=\n\*Copyright|\n\*From Food Network|\nRead More\s*\n\s*Rate this recipe|## Related Recipes)'
+        match = re.search(pattern, markdown_content, re.DOTALL | re.IGNORECASE)
         
-        Args:
-            html_content: HTML content
-            json_data: Recipe JSON-LD data
-            
-        Returns:
-            str: Recipe instructions
-        """
-        instructions = json_data.get('recipeInstructions', [])
-        if instructions:
-            instruction_texts = []
-            
-            if isinstance(instructions, str):
-                return self.clean_text(instructions)
-            elif isinstance(instructions, list):
-                for instruction in instructions:
-                    if isinstance(instruction, dict):
-                        text = instruction.get('text', '')
-                        if text:
-                            instruction_texts.append(self.clean_text(text))
-                    elif isinstance(instruction, str):
-                        instruction_texts.append(self.clean_text(instruction))
-                
-                if instruction_texts:
-                    return ' '.join(instruction_texts)
-            
+        if match:
+            method_text = match.group(1).strip()
+            method_text = re.sub(r'\s*Read More\s*$', '', method_text, flags=re.IGNORECASE)
+            return self.clean_text(method_text)
+        
         return ""
 
-    def extract_author(self, json_data: dict) -> str:
-        """
-        Extract recipe author.
-        
-        Args:
-            json_data: Recipe JSON-LD data
-            
-        Returns:
-            str: Author name
-        """
-        author = json_data.get('author', {})
-        return self.clean_text(author.get('name', ''))
-
-    def extract_prep_time(self, html_content: str) -> str:
-        """
-        Extract preparation time from HTML.
-        
-        Args:
-            html_content: HTML content to parse
-            
-        Returns:
-            str: Formatted preparation time
-        """
-        pattern = r'<img[^>]*time-icon\.svg[^>]*>.*?<span[^>]*>\s*([^<]+?(?:MINS?|HRS?))\s*</span>'
-        match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
+    def extract_author(self, markdown_content: str) -> str:
+        pattern = r'\[([^\]]+)\]\(https://foodnetwork\.co\.uk/chefs/[^\)]*?"Go to Author"\)'
+        match = re.search(pattern, markdown_content)
         if match:
-            time_str = self.clean_text(match.group(1))
+            return self.clean_text(match.group(1))
+        
+        return ""
+
+    def extract_prep_time(self, markdown_content: str) -> str:
+        # Look for time after time icon - handles formats like "15 MINS", "1 HRS 30 MINS", etc.
+        pattern = r'!\[A fallback image for Food Network UK\]\(/images/time-icon\.svg\)((?:\d+\s+HRS?)?\s*\d+\s+(?:MINS?|HRS?))'
+        match = re.search(pattern, markdown_content, re.IGNORECASE)
+        if match:
+            time_str = match.group(1).strip()
+            # Normalize time units
             time_str = re.sub(r'\bMINS?\b', 'min', time_str, flags=re.IGNORECASE)
             time_str = re.sub(r'\bHRS?\b', 'hr', time_str, flags=re.IGNORECASE)
-            return time_str
+            return self.clean_text(time_str)
+        
         return ""
 
-    def extract_servings(self, json_data: dict) -> str:
-        """
-        Extract servings information.
-        
-        Args:
-            json_data: Recipe JSON-LD data
-            
-        Returns:
-            str: Servings information
-        """
-        if json_data.get('recipeYield'):
-            yield_value = json_data['recipeYield']
-            return self.clean_text(str(yield_value))
-                
-        return ""
-    
-    def extract_difficulty(self, html_content: str) -> str:
-        """
-        Extract difficulty from HTML patterns.
-        
-        Args:
-            html_content: HTML content to parse
-            
-        Returns:
-            str: Recipe difficulty level
-        """
-        pattern = r'<li[^>]*class="[^"]*p-2[^"]*"[^>]*>\s*<span[^>]*>\s*<img[^>]*difficulty-icon[^>]*>\s*<span[^>]*>\s*([^<]+)\s*</span>'
-        match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
+    def extract_servings(self, markdown_content: str) -> str:
+        pattern = r'!\[A fallback image for Food Network UK\]\(/images/serves-icon\.svg\)(\d+)'
+        match = re.search(pattern, markdown_content)
         if match:
             return self.clean_text(match.group(1))
         
         return ""
     
-    def html_filename_to_url(self, filename: str) -> str:
-        """
-        Convert HTML filename back to URL.
+    def extract_difficulty(self, markdown_content: str) -> str:
+        pattern = r'!\[A fallback image for Food Network UK\]\(/images/difficulty-icon\.svg\)([A-Za-z\s]+?)(?=\n|!\[)'
+        match = re.search(pattern, markdown_content)
+        if match:
+            difficulty = self.clean_text(match.group(1))
+            if not difficulty.isdigit() and len(difficulty) < 50:
+                return difficulty
         
-        Args:
-            filename: HTML filename
-            
-        Returns:
-            str: Reconstructed URL
-        """
+        return ""
+    
+    def html_filename_to_url(self, filename: str) -> str:
         url = filename.replace('.html', '')
         url = url.replace('_', '/')
         
@@ -325,15 +142,6 @@ class RecipeScraper:
         return url
     
     def get_html_file_path(self, url: str) -> Optional[str]:
-        """
-        Get the HTML file path for a given URL.
-        
-        Args:
-            url: URL to find corresponding HTML file for
-            
-        Returns:
-            str or None: File path if found, None otherwise
-        """
         filename = url.replace('https://', '').replace('http://', '')
         filename = filename.replace('/', '_')
         
@@ -348,16 +156,6 @@ class RecipeScraper:
         return None
 
     def extract_recipe_metadata(self, url: str = None, html_file: str = None) -> Optional[RecipeMetadata]:
-        """
-        Extract complete recipe metadata from HTML file.
-        
-        Args:
-            url: Recipe URL (optional if html_file is provided)
-            html_file: HTML file path (optional if url is provided)
-            
-        Returns:
-            RecipeMetadata or None: Extracted recipe data or None if extraction fails
-        """
         if html_file:
             if not os.path.exists(html_file):
                 self.logger.warning(f"HTML file not found: {html_file}")
@@ -373,35 +171,39 @@ class RecipeScraper:
         else:
             self.logger.error("Either url or html_file must be provided")
             return None
-        
-        with open(html_file, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-        
-        json_data = self.extract_json_ld_recipe(html_content)
+
         normalized_html_file = html_file.replace('\\', '/')
-        
+
+        # Read the markdown content directly
+        md = MarkItDown()
+        result = md.convert(html_file)
+        markdown_content = result.text_content if hasattr(result, 'text_content') else str(result)
+
+        # Save markdown file
+        # md_file_path = html_file.replace('.html', '.md')
+        # try:
+        #     with open(md_file_path, 'w', encoding='utf-8') as md_file:
+        #         md_file.write(markdown_content)
+        #     self.logger.info(f"Saved markdown file: {md_file_path}")
+        # except Exception as e:
+        #     self.logger.warning(f"Failed to save markdown file {md_file_path}: {e}")
+
         metadata = RecipeMetadata(
             url=url,
             html_file=normalized_html_file,
-            title=self.extract_title(json_data),
-            description=self.extract_description(json_data, html_content),
-            method=self.extract_method(html_content, json_data),
-            ingredients=self.extract_ingredients(json_data),
-            prep_time=self.extract_prep_time(html_content),
-            servings=self.extract_servings(json_data),
-            difficulty=self.extract_difficulty(html_content),
-            chef=self.extract_author(json_data)
+            title=self.extract_title(markdown_content),
+            description=self.extract_description(markdown_content),
+            method=self.extract_method(markdown_content),
+            ingredients=self.extract_ingredients(markdown_content),
+            prep_time=self.extract_prep_time(markdown_content),
+            servings=self.extract_servings(markdown_content),
+            difficulty=self.extract_difficulty(markdown_content),
+            chef=self.extract_author(markdown_content)
         )
         
         return metadata
 
     def save_to_jsonl(self, metadata: RecipeMetadata):
-        """
-        Save single recipe to the main recipes.jsonl file.
-        
-        Args:
-            metadata: Recipe metadata to save
-        """
         data_dict = {
             'url': metadata.url,
             'html_file': metadata.html_file,
@@ -420,15 +222,6 @@ class RecipeScraper:
             f.write('\n')
 
     def is_valid_recipe_file(self, filename: str) -> bool:
-        """
-        Check if filename matches recipe file pattern.
-        
-        Args:
-            filename: Filename to validate
-            
-        Returns:
-            bool: True if filename is a valid recipe file
-        """
         name_without_ext = filename.replace('.html', '')
         
         parts = name_without_ext.split('_')
@@ -450,7 +243,6 @@ class RecipeScraper:
         return True
     
     def scrape_all_recipes(self):
-        """Main method to scrape all recipes to a single recipes.jsonl file."""
         if not os.path.exists(self.html_dir):
             self.logger.error(f"HTML directory not found: {self.html_dir}")
             return
@@ -458,7 +250,7 @@ class RecipeScraper:
         all_html_files = [f for f in os.listdir(self.html_dir) if f.endswith('.html')]
         
         html_files = [f for f in all_html_files if self.is_valid_recipe_file(f)]
-        
+
         if not html_files:
             self.logger.error(f"No valid recipe HTML files found in: {self.html_dir}")
             return
@@ -474,7 +266,7 @@ class RecipeScraper:
         for html_filename in html_files:
             html_path = os.path.join(self.html_dir, html_filename)
             url = self.html_filename_to_url(html_filename)
-            
+
             metadata = self.extract_recipe_metadata(url=url, html_file=html_path)
             if metadata:
                 self.save_to_jsonl(metadata)
@@ -487,10 +279,8 @@ class RecipeScraper:
 
 
 def main():
-    """Main function to run the recipe scraper."""
     scraper = RecipeScraper()
     scraper.scrape_all_recipes()
-
 
 if __name__ == "__main__":
     main()

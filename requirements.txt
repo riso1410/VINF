@@ -4,3 +4,4 @@ selenium
 tiktoken
 pyspark
 psutil
+markitdown[all]

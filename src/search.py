@@ -1,11 +1,3 @@
-"""
-Recipe Search Engine with BM25 and TF-IDF Search Methods
-
-Features:
-- TF search with Robertson IDF: idf = log((N - df + 0.5) / (df + 0.5)), score = tf * idf
-- TF search with classic IDF: idf = log(N / df), score = tf * idf
-"""
-
 import os
 import json
 import math
@@ -18,20 +10,6 @@ import config
 
 @dataclass
 class SearchResult:
-    """
-    Represents a single search result.
-    
-    Attributes:
-        doc_id: Unique document identifier
-        url: Document URL
-        title: Recipe title
-        score: Relevance score
-        chef: Chef name (optional)
-        difficulty: Difficulty level (optional)
-        prep_time: Preparation time (optional)
-        servings: Number of servings (optional)
-        word_count: Total word count in document (optional)
-    """
     doc_id: str
     url: str
     title: str
@@ -44,21 +22,8 @@ class SearchResult:
 
 
 class RecipeSearchEngine:
-    """
-    Search engine with BM25 and TF-IDF search algorithms.
-    
-    Robertson IDF: idf = log((N - df + 0.5) / (df + 0.5))
-    Classic IDF: idf = log(N / df)
-    """
     
     def __init__(self, index_dir: str = None, log_level: int = None):
-        """
-        Initialize the search engine.
-        
-        Args:
-            index_dir: Directory containing index files
-            log_level: Logging level
-        """
         self.index_dir = index_dir if index_dir is not None else config.INDEX_DIR
         log_level = log_level if log_level is not None else config.LOG_LEVEL
         
@@ -75,7 +40,6 @@ class RecipeSearchEngine:
         self.logger.info(f"Search engine initialized: {self.total_documents} docs, {self.vocabulary_size} terms")
     
     def load_index(self):
-        """Load the inverted index and document statistics from disk."""
         metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r', encoding='utf-8') as f:
@@ -118,15 +82,6 @@ class RecipeSearchEngine:
         return text.strip()
     
     def tokenize(self, text: str) -> List[str]:
-        """
-        Tokenize and filter query text.
-        
-        Args:
-            text: Input text to tokenize
-            
-        Returns:
-            List of filtered tokens
-        """
         if not text:
             return []
         normalized = self.normalize_text(text)
@@ -139,20 +94,6 @@ class RecipeSearchEngine:
         ]
     
     def calculate_bm25_score(self, term: str, doc_id: str) -> float:
-        """
-        Calculate BM25 score for a term in a document using Robertson IDF.
-        
-        Formula:
-            idf_robertson = log((N - df + 0.5) / (df + 0.5))
-            score = idf_robertson * tf
-        
-        Args:
-            term: Search term
-            doc_id: Document ID
-            
-        Returns:
-            BM25 score for the term in the document
-        """
         if term not in self.inverted_index:
             return 0.0
         
@@ -162,26 +103,11 @@ class RecipeSearchEngine:
         
         tf = postings[doc_id]
         df = self.inverted_index[term]["df"]
-        idf_robertson = math.log((self.total_documents - df + 0.5) / (df + 0.5))
         
-        score = idf_robertson * tf
+        score = math.log((self.total_documents - df + 0.5) / (df + 0.5 + tf))
         return score
     
     def search_bm25(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
-        """
-        Perform BM25 search using Robertson IDF.
-        
-        Formula:
-            idf_robertson = log((N - df + 0.5) / (df + 0.5))
-            score = idf_robertson * tf
-        
-        Args:
-            query: Search query string
-            top_k: Number of top results to return
-            
-        Returns:
-            List of SearchResult objects ranked by BM25 score
-        """
         query_terms = self.tokenize(query)
         if not query_terms:
             return []
@@ -219,20 +145,6 @@ class RecipeSearchEngine:
         return results
     
     def search_tfidf(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
-        """
-        Perform TF-IDF search using classic IDF.
-        
-        Formula:
-            idf_classic = log(N / df)
-            score = tf * idf_classic
-        
-        Args:
-            query: Search query string
-            top_k: Number of top results to return
-            
-        Returns:
-            List of SearchResult objects ranked by TF-IDF score
-        """
         query_terms = self.tokenize(query)
         if not query_terms:
             return []
@@ -259,9 +171,8 @@ class RecipeSearchEngine:
                 
                 tf = postings[doc_id]
                 df = self.inverted_index[term]["df"]
-                idf_classic = math.log(self.total_documents / df)
                 
-                score += tf * idf_classic
+                score += math.log(self.total_documents / (df + tf))
             
             if score > 0:
                 doc_scores[doc_id] = score
@@ -286,17 +197,6 @@ class RecipeSearchEngine:
         return results
     
     def search(self, query: str, method: str = 'bm25', top_k: int = None) -> List[SearchResult]:
-        """
-        Perform search using specified method.
-        
-        Args:
-            query: Search query string
-            method: Search method ('bm25' or 'tfidf')
-            top_k: Number of results to return
-            
-        Returns:
-            List of SearchResult objects
-        """
         top_k = top_k if top_k is not None else config.DEFAULT_TOP_K
         
         if method.lower() == 'tfidf':
@@ -305,13 +205,6 @@ class RecipeSearchEngine:
             return self.search_bm25(query, top_k=top_k)
     
     def display_results(self, results: List[SearchResult], show_details: bool = True):
-        """
-        Display search results in a formatted way.
-        
-        Args:
-            results: List of search results
-            show_details: Whether to show detailed information
-        """
         if not results:
             print("\nNo results found.")
             return
@@ -339,12 +232,6 @@ class RecipeSearchEngine:
 
 
 def main():
-    """
-    Main function demonstrating search capabilities.
-    
-    Provides examples of BM25 and TF-IDF search, followed by an interactive
-    search mode where users can choose their preferred search method.
-    """
     search_engine = RecipeSearchEngine()
     
     print("\nSelect search method:")
