@@ -141,20 +141,9 @@ class Crawler:
             self.logger.info(f"Crawling: {url}")
             
             self.driver.get(url)
-            
-            if self.is_recipe_url(url):
-                try:
-                    WebDriverWait(self.driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".o-Ingredients__m-Body .o-Ingredients__a-Ingredient"))
-                    )
-                except TimeoutException:
-                    self.logger.warning(f"Timed out waiting for ingredients on {url}. The page might not have rendered correctly.")
-            else:
-                # For non-recipe pages, just wait for the body
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-            
+
+            time.sleep(3)
+
             html_content = self.driver.page_source
             
             if self.is_recipe_url(url):
