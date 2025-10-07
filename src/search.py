@@ -23,22 +23,16 @@ class SearchResult:
 
 class RecipeSearchEngine:
     
-    def __init__(self, index_dir: str = None, log_level: int = None):
-        self.index_dir = index_dir if index_dir is not None else config.INDEX_DIR
-        log_level = log_level if log_level is not None else config.LOG_LEVEL
-        
-        os.makedirs(config.LOGS_DIR, exist_ok=True)
-        self.logger = config.setup_logging(config.SEARCH_LOG, log_level)
-        
+    def __init__(self):
+        self.index_dir = config.INDEX_DIR
+
         self.inverted_index: Dict[str, Dict] = {}
         self.document_stats: Dict[str, Dict] = {}
         self.total_documents: int = 0
         self.vocabulary_size: int = 0
         
         self.load_index()
-        
-        self.logger.info(f"Search engine initialized: {self.total_documents} docs, {self.vocabulary_size} terms")
-    
+            
     def load_index(self):
         metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
         if os.path.exists(metadata_path):

@@ -6,10 +6,6 @@ import time
 import pickle
 import random
 from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
 import config
 
 
@@ -167,14 +163,6 @@ class Crawler:
                 self.logger.info(f"Found {new_urls} new URLs ({new_recipe_urls} recipes) on {url}")
             else:
                 self.logger.info(f"Found {new_urls} new URLs (0 recipes) on {url}")
-            
-        except TimeoutException:
-            self.logger.error(f"Selenium timeout for {url}")
-            self.handle_retry_logic(url, retry_count, max_retries, "timeout")
-            
-        except WebDriverException as e:
-            self.logger.error(f"Selenium error for {url}: {e}")
-            self.handle_retry_logic(url, retry_count, max_retries, str(e))
             
         except Exception as e:
             self.logger.error(f"Unexpected error crawling {url}: {e}")

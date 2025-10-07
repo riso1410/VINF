@@ -1,0 +1,74 @@
+flowchart LR
+    %% Initialization Phase
+    Start([🚀 START]):::startStyle --> Init[📁 Initialize<br/>───────────<br/>• Create directories<br/>• Setup logging<br/>• Initialize queues]:::initStyle
+    Init --> Checkpoint{💾 Checkpoint<br/>exists?}:::decisionStyle
+    
+    Checkpoint -->|Yes| Restore[♻️ Restore State<br/>───────────<br/>URLs & Recipes]:::restoreStyle
+    Checkpoint -->|No| Fresh[✨ Fresh Start]:::restoreStyle
+    
+    Restore --> Driver[🌐 Setup Selenium<br/>───────────<br/>Chrome WebDriver]:::setupStyle
+    Fresh --> Driver
+    
+    %% Main Loop
+    Driver --> Loop{🔄 Queue<br/>Empty?}:::loopStyle
+    
+    Loop -->|Yes| Finish[🏁 Cleanup<br/>───────────<br/>• Quit driver<br/>• Save checkpoint<br/>• Log stats]:::finishStyle
+    Finish --> End([✅ DONE]):::endStyle
+    
+    Loop -->|No| Dequeue[📤 Dequeue URL]:::queueStyle
+    Dequeue --> Visited{🔍 Already<br/>visited?}:::decisionStyle
+    
+    Visited -->|Yes| Loop
+    Visited -->|No| Mark[✔️ Mark Visited<br/>───────────<br/>visited_urls.add]:::processStyle
+    
+    %% Crawling Phase
+    Mark --> Fetch[🌍 Fetch Page<br/>───────────<br/>driver.get#40;url#41;]:::fetchStyle
+    Fetch --> Wait1[⏱️ Wait 3s]:::waitStyle
+    Wait1 --> Parse[📄 Get HTML<br/>───────────<br/>page_source]:::parseStyle
+    
+    %% Recipe Detection
+    Parse --> Recipe{🍳 Recipe<br/>URL?}:::recipeStyle
+    
+    Recipe -->|Yes| Downloaded{📥 Already<br/>saved?}:::decisionStyle
+    Downloaded -->|No| Save[💾 Save HTML<br/>───────────<br/>• Create filename<br/>• Write to disk<br/>• Track recipe]:::saveStyle
+    Downloaded -->|Yes| ExtractURLs
+    Save --> ExtractURLs
+    
+    Recipe -->|No| ExtractURLs[🔗 Extract URLs<br/>───────────<br/>• Regex match<br/>• Filter domain<br/>]:::extractStyle
+    
+    %% URL Processing
+    ExtractURLs --> Enqueue[➕ Enqueue New<br/>───────────<br/>Add to queue]:::queueStyle
+    
+    Enqueue --> Mod{💾 Save<br/>checkpoint?<br/>#40;every 10#41;}:::decisionStyle
+    Mod -->|Yes| SaveCkpt[📌 Checkpoint<br/>───────────<br/>Pickle state]:::checkpointStyle
+    Mod -->|No| Delay
+    SaveCkpt --> Delay[⏳ Random Delay<br/>───────────<br/>2-5 seconds]:::waitStyle
+    
+    Delay --> Loop
+    
+    %% Error Handling
+    Fetch -.->|❌ Error| Retry{🔁 Can<br/>retry?<br/>3 times}:::errorStyle
+    Retry -->|Yes| Wait2[⏱️ Wait 3s]:::waitStyle
+    Wait2 --> Fetch
+    Retry -->|No| LogError[⚠️ Log & Skip]:::errorStyle
+    LogError --> Delay
+    
+    %% Styles
+    classDef startStyle fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff,font-weight:bold
+    classDef endStyle fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff,font-weight:bold
+    classDef initStyle fill:#2196F3,stroke:#1565C0,stroke-width:2px,color:#fff
+    classDef decisionStyle fill:#FF9800,stroke:#E65100,stroke-width:2px,color:#fff,font-weight:bold
+    classDef loopStyle fill:#9C27B0,stroke:#4A148C,stroke-width:3px,color:#fff,font-weight:bold
+    classDef queueStyle fill:#00BCD4,stroke:#006064,stroke-width:2px,color:#fff
+    classDef processStyle fill:#3F51B5,stroke:#1A237E,stroke-width:2px,color:#fff
+    classDef fetchStyle fill:#673AB7,stroke:#311B92,stroke-width:2px,color:#fff
+    classDef parseStyle fill:#009688,stroke:#004D40,stroke-width:2px,color:#fff
+    classDef recipeStyle fill:#FF5722,stroke:#BF360C,stroke-width:2px,color:#fff,font-weight:bold
+    classDef saveStyle fill:#8BC34A,stroke:#33691E,stroke-width:2px,color:#fff
+    classDef extractStyle fill:#00ACC1,stroke:#006064,stroke-width:2px,color:#fff
+    classDef checkpointStyle fill:#FFC107,stroke:#F57F17,stroke-width:2px,color:#000
+    classDef waitStyle fill:#9E9E9E,stroke:#424242,stroke-width:2px,color:#fff
+    classDef errorStyle fill:#F44336,stroke:#B71C1C,stroke-width:2px,color:#fff
+    classDef restoreStyle fill:#03A9F4,stroke:#01579B,stroke-width:2px,color:#fff
+    classDef setupStyle fill:#607D8B,stroke:#263238,stroke-width:2px,color:#fff
+    classDef finishStyle fill:#4CAF50,stroke:#1B5E20,stroke-width:2px,color:#fff

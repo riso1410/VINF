@@ -69,19 +69,15 @@ class SearchIndex:
 
 class RecipeIndexer:
     
-    def __init__(self, 
-                 recipes_file: str = None,
-                 index_dir: str = None,
-                 log_level: int = None):
-        self.recipes_file = recipes_file if recipes_file is not None else config.RECIPES_FILE
-        self.index_dir = index_dir if index_dir is not None else config.INDEX_DIR
-        log_level = log_level if log_level is not None else config.LOG_LEVEL
-        
+    def __init__(self):
+        self.recipes_file = config.RECIPES_FILE
+        self.index_dir = config.INDEX_DIR
+
         os.makedirs(self.index_dir, exist_ok=True)
         os.makedirs(config.LOGS_DIR, exist_ok=True)
-        
-        self.logger = config.setup_logging(config.INDEXER_LOG, log_level)
-        
+
+        self.logger = config.setup_logging(config.INDEXER_LOG, config.LOG_LEVEL)
+
         self.min_word_length = config.MIN_WORD_LENGTH
         self.max_word_length = config.MAX_WORD_LENGTH
         self.stop_words = config.STOP_WORDS
@@ -113,9 +109,9 @@ class RecipeIndexer:
         
         return total_size
 
-    def save_metadata(self, total_documents: int, vocabulary_size: int, total_html_size: int, total_tokens: int):
-        metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
-        metadata = {
+    def save_stats(self, total_documents: int, vocabulary_size: int, total_html_size: int, total_tokens: int):
+        stats_path = os.path.join(self.index_dir, "stats.jsonl")
+        stats = {
             "total_documents": total_documents,
             "vocabulary_size": vocabulary_size,
             "total_tokens": total_tokens,
@@ -123,8 +119,8 @@ class RecipeIndexer:
             "size_mb": round(total_html_size / (1024 * 1024), 2)
         }
         
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f)
+        with open(stats_path, 'w', encoding='utf-8') as f:
+            json.dump(stats, f)
             f.write('\n')
 
     def save_document_mapping(self, doc_stats_list):
@@ -223,7 +219,7 @@ class RecipeIndexer:
         doc_stats_list = doc_stats_df.collect()
         inverted_index_list = inverted_index_df.collect()
 
-        self.save_metadata(total_documents, vocabulary_size, total_html_size, total_tokens)
+        self.save_stats(total_documents, vocabulary_size, total_html_size, total_tokens)
         self.save_document_mapping(doc_stats_list)
         self.save_inverted_index(inverted_index_list)
 

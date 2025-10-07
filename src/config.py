@@ -52,8 +52,7 @@ SKIP_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.xml
 
 # Chrome options
 CHROME_WINDOW_SIZE = "1920,1080"
-CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 (FIIT School Project - VINF Course)"
-
+CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 (FIIT School Project - VINF Course)"
 # Retry settings
 MAX_RETRIES = 3
 
@@ -108,7 +107,6 @@ RECIPE_URL_PATTERN = '/recipes/'
 RECIPE_URL_MIN_SLASHES = 4
 
 # HTML extraction patterns
-JSON_LD_PATTERN = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
 URL_PATTERN = r'<a[^>]+href\s*=\s*["\']([^"\']+)["\'][^>]*>'
 
 # Time format patterns

@@ -24,9 +24,9 @@ class RecipeMetadata:
 
 class RecipeScraper:
     
-    def __init__(self, html_dir: str = None, output_dir: str = None):
-        self.html_dir = html_dir if html_dir is not None else config.RAW_HTML_DIR
-        self.output_dir = output_dir if output_dir is not None else config.SCRAPED_DIR
+    def __init__(self):
+        self.html_dir = config.RAW_HTML_DIR
+        self.output_dir = config.SCRAPED_DIR
         self.recipes_file = os.path.join(self.output_dir, "recipes.jsonl")
         
         os.makedirs(self.output_dir, exist_ok=True)
