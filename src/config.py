@@ -6,6 +6,8 @@ Contains all hyperparameters and settings for crawler, scraper, indexer, and sea
 import logging
 import os
 
+from selenium.webdriver.chrome.options import Options
+
 # Get the project root directory (parent of src/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -117,32 +119,13 @@ URL_PATTERN = r'<a[^>]+href\s*=\s*["\']([^"\']+)["\'][^>]*>'
 # ============================================================================
 
 def get_chrome_options():
-    """Get configured Chrome options for Selenium"""
-    from selenium.webdriver.chrome.options import Options
-    
+    """Get configured Chrome options for Selenium"""    
     chrome_options = Options()
     
     chrome_options.add_argument('--headless')
     chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument(f'--window-size={CHROME_WINDOW_SIZE}')
     chrome_options.add_argument(f'--user-agent={CHROME_USER_AGENT}')
-    
-    # Suppress common Chrome errors in headless mode
-    chrome_options.add_argument('--disable-logging')
-    chrome_options.add_argument('--log-level=3')
-    chrome_options.add_argument('--disable-background-networking')
-    chrome_options.add_argument('--disable-default-apps')
-    chrome_options.add_argument('--disable-sync')
-    
-    # Additional stability options
-    chrome_options.add_argument('--disable-web-security')
-    chrome_options.add_argument('--disable-features=VizDisplayCompositor')
-    chrome_options.add_argument('--disable-extensions')
-    chrome_options.add_argument('--disable-plugins')
-    chrome_options.add_argument('--no-first-run')
-    chrome_options.add_argument('--disable-popup-blocking')
     
     # Disable images and CSS for faster loading
     prefs = {
