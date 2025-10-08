@@ -18,7 +18,6 @@ class SearchResult:
     difficulty: str = ""
     prep_time: str = ""
     servings: str = ""
-    word_count: int = 0
 
 
 class RecipeSearchEngine:
@@ -59,15 +58,6 @@ class RecipeSearchEngine:
                     }
     
     def normalize_text(self, text: str) -> str:
-        """
-        Normalize text for searching.
-        
-        Args:
-            text: Input text to normalize
-            
-        Returns:
-            Normalized lowercase text with only alphanumeric characters
-        """
         if not text:
             return ""
         text = text.lower()
@@ -184,8 +174,7 @@ class RecipeSearchEngine:
                 chef=doc_info.get("chef", ""),
                 difficulty=doc_info.get("difficulty", ""),
                 prep_time=doc_info.get("prep_time", ""),
-                servings=doc_info.get("servings", ""),
-                word_count=doc_info.get("word_count", 0)
+                servings=doc_info.get("servings", "")
             ))
         
         return results

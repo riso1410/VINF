@@ -44,9 +44,6 @@ class DocumentStats:
     doc_id: str
     url: str
     title: str
-    word_count: int
-    unique_words: int
-    token_count: int = 0
     chef: str = ""
     difficulty: str = ""
     prep_time: str = ""
@@ -132,9 +129,6 @@ class RecipeIndexer:
                     "doc_id": row.doc_id,
                     "url": row.url,
                     "title": row.title,
-                    "word_count": row.word_count,
-                    "unique_words": row.unique_words,
-                    "token_count": row.token_count,
                     "chef": row.chef or "",
                     "difficulty": row.difficulty or "",
                     "prep_time": row.prep_time or "",
@@ -206,15 +200,12 @@ class RecipeIndexer:
 
         tiktoken_len_udf = F.udf(count_tokens, T.IntegerType())
 
-        doc_stats_df = df.withColumn("word_count", F.size(F.col("tokens"))) \
-                         .withColumn("unique_words", F.size(F.array_distinct(F.col("tokens")))) \
-                         .withColumn("token_count", tiktoken_len_udf(F.col("full_text"))) \
-                         .select(
-                             "doc_id", "url", "title", "word_count", "unique_words", "token_count",
-                               "chef", "difficulty", "prep_time", "servings"
-                         )
+        doc_stats_df = df.select(
+            "doc_id", "url", "title", "chef", "difficulty", "prep_time", "servings"
+        )
         
-        total_tokens = doc_stats_df.agg(F.sum("token_count")).collect()[0][0] or 0
+        total_tokens = df.withColumn("token_count", tiktoken_len_udf(F.col("full_text"))) \
+                         .agg(F.sum("token_count")).collect()[0][0] or 0
         
         doc_stats_list = doc_stats_df.collect()
         inverted_index_list = inverted_index_df.collect()
