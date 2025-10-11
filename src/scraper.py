@@ -52,16 +52,22 @@ class RecipeScraper:
         return ""
 
     def extract_description(self, markdown_content: str) -> str:
-        pattern = r'\[Rate\]\(#vote\).*?(?:\n\s*\* !\[A fallback image for Food Network UK\][^\n]*)+\s*\n\s*(.*?)(?=\n\nFeatured In:)'
-        match = re.search(pattern, markdown_content, re.DOTALL)
-        if match:
-            description = match.group(1).strip()
-            # Clean up any remaining noise
-            description = re.sub(r'!\[.*?\]\(.*?\)', '', description)  # Remove images
-            # Remove any links
-            description = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', description)
-            return self.clean_text(description)
-        
+        patterns = [
+            # 1. Icon-based: after [Rate] and icons, up to blank line, heading, image, or 'Featured In:'
+            r'\[Rate\]\(#vote\).*?(?:\n\s*\* !\[A fallback image for Food Network UK\][^\n]*)+\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)',
+            # 2. Image/paragraph-based: after [Rate], optional image, then paragraph
+            r'\[Rate\]\(#vote\)\s*\n\s*!\[[^\]]*\]\([^\)]*\)\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)',
+            # 3. Fallback: just after [Rate], up to blank line, heading, or 'Featured In:'
+            r'\[Rate\]\(#vote\)\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, markdown_content, re.DOTALL | re.MULTILINE)
+            if match:
+                description = match.group(1).strip()
+                # Remove images and links
+                description = re.sub(r'!\[.*?\]\(.*?\)', '', description)
+                description = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', description)
+                return self.clean_text(description)
         return ""
 
     def extract_ingredients(self, markdown_content: str) -> List[str]:
@@ -203,54 +209,39 @@ class RecipeScraper:
         
         return metadata
 
+    def fix_field(self, val, default):
+        if val is None or val == {}:
+            return default
+        return val
+
     def save_to_jsonl(self, metadata: RecipeMetadata):
+        if metadata.title.strip() == 'Recipes':
+            return
+
         data_dict = {
-            'url': metadata.url,
-            'html_file': metadata.html_file,
-            'title': metadata.title,
-            'description': metadata.description,
-            'method': metadata.method,
-            'ingredients': metadata.ingredients,
-            'prep_time': metadata.prep_time,
-            'servings': metadata.servings,
-            'difficulty': metadata.difficulty,
-            'chef': metadata.chef
+            'url': self.fix_field(metadata.url, ''),
+            'html_file': self.fix_field(metadata.html_file, ''),
+            'title': self.fix_field(metadata.title, ''),
+            'description': self.fix_field(metadata.description, ''),
+            'method': self.fix_field(metadata.method, ''),
+            'ingredients': self.fix_field(metadata.ingredients, []),
+            'prep_time': self.fix_field(metadata.prep_time, ''),
+            'servings': self.fix_field(metadata.servings, ''),
+            'difficulty': self.fix_field(metadata.difficulty, ''),
+            'chef': self.fix_field(metadata.chef, '')
         }
-        
+
         with open(self.recipes_file, 'a', encoding='utf-8') as f:
             json.dump(data_dict, f, ensure_ascii=False)
             f.write('\n')
-
-    def is_valid_recipe_file(self, filename: str) -> bool:
-        name_without_ext = filename.replace('.html', '')
-        
-        parts = name_without_ext.split('_')
-        
-        if len(parts) != 3:
-            return False
-        
-        try:
-            recipes_index = parts.index('recipes')
-        except ValueError:
-            return False
-        
-        if recipes_index != 1:
-            return False
-        
-        if len(parts) - recipes_index != 2:
-            return False
-        
-        return True
     
     def scrape_all_recipes(self):
         if not os.path.exists(self.html_dir):
             self.logger.error(f"HTML directory not found: {self.html_dir}")
             return
         
-        all_html_files = [f for f in os.listdir(self.html_dir) if f.endswith('.html')]
+        html_files = [f for f in os.listdir(self.html_dir) if f.endswith('.html')]
         
-        html_files = [f for f in all_html_files if self.is_valid_recipe_file(f)]
-
         if not html_files:
             self.logger.error(f"No valid recipe HTML files found in: {self.html_dir}")
             return
@@ -263,7 +254,10 @@ class RecipeScraper:
         processed_count = 0
         successful_count = 0
         
-        for html_filename in html_files:
+        total_files = len(html_files)
+        for idx, html_filename in enumerate(html_files, start=1):
+            if idx % 10 == 0 or idx == total_files:
+                self.logger.info(f"Processing file {idx} out of {total_files}")
             html_path = os.path.join(self.html_dir, html_filename)
             url = self.html_filename_to_url(html_filename)
 
@@ -271,9 +265,9 @@ class RecipeScraper:
             if metadata:
                 self.save_to_jsonl(metadata)
                 successful_count += 1
-                            
+
             processed_count += 1
-                    
+
         self.logger.info(f"Scraping completed. Processed {processed_count} files, extracted {successful_count} recipes")
         self.logger.info(f"All recipes saved to: {self.recipes_file}")
 

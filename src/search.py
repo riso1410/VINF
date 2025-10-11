@@ -33,7 +33,7 @@ class RecipeSearchEngine:
         self.load_index()
             
     def load_index(self):
-        metadata_path = os.path.join(self.index_dir, "metadata.jsonl")
+        metadata_path = os.path.join(self.index_dir, "stats.jsonl")
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 metadata = json.loads(f.readline())
@@ -76,93 +76,56 @@ class RecipeSearchEngine:
             and token not in config.STOP_WORDS
             and not token.isdigit()
         ]
-    
-    def calculate_bm25_score(self, term: str, doc_id: str) -> float:
+
+    def idf_robertson(self, term: str, tf: int, df: int) -> float:
+        # BM25/Robertson IDF with TF in denominator
+        return math.log((self.total_documents - df + 0.5) / (df + 0.5 + tf))
+
+    def idf_classic(self, term: str, tf: int, df: int) -> float:
+        # Classic TF-IDF with TF in denominator
+        return math.log(self.total_documents / (df + tf)) if (df + tf) > 0 else 0.0
+
+    def calculate_idf_score(self, term: str, doc_id: str, method: str = 'robertson') -> float:
         if term not in self.inverted_index:
             return 0.0
-        
         postings = self.inverted_index[term]["postings"]
         if doc_id not in postings:
             return 0.0
-        
         tf = postings[doc_id]
         df = self.inverted_index[term]["df"]
-        
-        score = math.log((self.total_documents - df + 0.5) / (df + 0.5 + tf))
-        return score
+        if method == 'classic':
+            return self.idf_classic(term, tf, df)
+        else:
+            return self.idf_robertson(term, tf, df)
     
-    def search_bm25(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
+
+    def search(self, query: str, idf_method: str = 'robertson', top_k: int = None) -> List[SearchResult]:
+        """
+        Unified search method. Uses IDF as score, with two IDF calculation options (robertson or classic), both using TF in denominator.
+        """
+        top_k = top_k if top_k is not None else config.DEFAULT_TOP_K
         query_terms = self.tokenize(query)
         if not query_terms:
             return []
-        
+
         candidate_docs: Set[str] = set()
         for term in query_terms:
             if term in self.inverted_index:
                 candidate_docs.update(self.inverted_index[term]["postings"].keys())
-        
+
         if not candidate_docs:
             return []
-        
-        doc_scores: Dict[str, float] = {}
-        for doc_id in candidate_docs:
-            score = sum(self.calculate_bm25_score(term, doc_id) for term in query_terms)
-            doc_scores[doc_id] = score
-        
-        sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        
-        results = []
-        for doc_id, score in sorted_docs:
-            doc_info = self.document_stats[doc_id]
-            results.append(SearchResult(
-                doc_id=doc_id,
-                url=doc_info["url"],
-                title=doc_info["title"],
-                score=score,
-                chef=doc_info.get("chef", ""),
-                difficulty=doc_info.get("difficulty", ""),
-                prep_time=doc_info.get("prep_time", ""),
-                servings=doc_info.get("servings", ""),
-                word_count=doc_info.get("word_count", 0)
-            ))
-        
-        return results
-    
-    def search_tfidf(self, query: str, top_k: int = config.DEFAULT_TOP_K) -> List[SearchResult]:
-        query_terms = self.tokenize(query)
-        if not query_terms:
-            return []
-        
-        candidate_docs: Set[str] = set()
-        for term in query_terms:
-            if term in self.inverted_index:
-                candidate_docs.update(self.inverted_index[term]["postings"].keys())
-        
-        if not candidate_docs:
-            return []
-        
+
         doc_scores: Dict[str, float] = {}
         for doc_id in candidate_docs:
             score = 0.0
-            
             for term in query_terms:
-                if term not in self.inverted_index:
-                    continue
-                
-                postings = self.inverted_index[term]["postings"]
-                if doc_id not in postings:
-                    continue
-                
-                tf = postings[doc_id]
-                df = self.inverted_index[term]["df"]
-                
-                score += math.log(self.total_documents / (df + tf))
-            
+                score += self.calculate_idf_score(term, doc_id, method=idf_method)
             if score > 0:
                 doc_scores[doc_id] = score
-        
+
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        
+
         results = []
         for doc_id, score in sorted_docs:
             doc_info = self.document_stats[doc_id]
@@ -176,16 +139,8 @@ class RecipeSearchEngine:
                 prep_time=doc_info.get("prep_time", ""),
                 servings=doc_info.get("servings", "")
             ))
-        
+
         return results
-    
-    def search(self, query: str, method: str = 'bm25', top_k: int = None) -> List[SearchResult]:
-        top_k = top_k if top_k is not None else config.DEFAULT_TOP_K
-        
-        if method.lower() == 'tfidf':
-            return self.search_tfidf(query, top_k=top_k)
-        else:
-            return self.search_bm25(query, top_k=top_k)
     
     def display_results(self, results: List[SearchResult], show_details: bool = True):
         if not results:
@@ -217,56 +172,57 @@ class RecipeSearchEngine:
 def main():
     search_engine = RecipeSearchEngine()
     
-    print("\nSelect search method:")
-    print("  1. BM25 (Robertson IDF)")
-    print("  2. TF-IDF (Classic IDF)")
+
+    print("\nSelect IDF calculation method:")
+    print("  1. Robertson (BM25-style)")
+    print("  2. Classic (TF-IDF-style)")
     print()
-    
-    method_choice = input("Choose search method (1-2): ").strip()
-    
+
+    method_choice = input("Choose IDF method (1-2): ").strip()
+
     if method_choice == '1':
-        search_method = 'bm25'
-        print("\nUsing: BM25 (Robertson IDF)")
+        idf_method = 'robertson'
+        print("\nUsing: Robertson (BM25-style) IDF")
     elif method_choice == '2':
-        search_method = 'tfidf'
-        print("\nUsing: TF-IDF (Classic IDF)")
+        idf_method = 'classic'
+        print("\nUsing: Classic (TF-IDF-style) IDF")
     else:
-        search_method = 'bm25'
-        print("\nInvalid choice. Using: BM25 (Robertson IDF)")
-    
-    print("\nEnter search queries (or 'quit' to exit, 'change' to change search method)")
+        idf_method = 'robertson'
+        print("\nInvalid choice. Using: Robertson (BM25-style) IDF")
+
+    print("\nEnter search queries (or 'quit' to exit, 'change' to change IDF method)")
     print()
-    
+
     while True:
         try:
             query = input("Search query: ").strip()
-            
+
             if not query or query.lower() == 'quit':
                 break
-            
+
             if query.lower() == 'change':
-                print("\nSelect search method:")
-                print("  1. BM25 (Robertson IDF)")
-                print("  2. TF-IDF (Classic IDF)")
+                print("\nSelect IDF calculation method:")
+                print("  1. Robertson (BM25-style)")
+                print("  2. Classic (TF-IDF-style)")
                 print()
-                
-                method_choice = input("Choose search method (1-2): ").strip()
-                
+
+                method_choice = input("Choose IDF method (1-2): ").strip()
+
                 if method_choice == '1':
-                    search_method = 'bm25'
-                    print("\nUsing: BM25 (Robertson IDF)")
+                    idf_method = 'robertson'
+                    print("\nUsing: Robertson (BM25-style) IDF")
                 elif method_choice == '2':
-                    search_method = 'tfidf'
-                    print("\nUsing: TF-IDF (Classic IDF)")
+                    idf_method = 'classic'
+                    print("\nUsing: Classic (TF-IDF-style) IDF")
                 else:
-                    search_method = 'bm25'
-                    print("\nInvalid choice. Using: BM25 (Robertson IDF)")
+                    idf_method = 'robertson'
+                    print("\nInvalid choice. Using: Robertson (BM25-style) IDF")
                 print()
                 continue
-            
-            results = search_engine.search(query, method=search_method, top_k=config.DEFAULT_TOP_K)
+
+            results = search_engine.search(query, idf_method=idf_method, top_k=config.DEFAULT_TOP_K)
             search_engine.display_results(results)
-            
+
         except KeyboardInterrupt:
             print("\n\nSearch interrupted.")
             break

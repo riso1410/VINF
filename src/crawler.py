@@ -1,5 +1,8 @@
 import os
 import re
+import argparse
+import requests
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 from collections import deque
 import time
@@ -7,6 +10,14 @@ import pickle
 import random
 from selenium import webdriver
 import config
+
+
+def html_filename_to_url(filename: str) -> str:
+    url = filename.replace('.html', '')
+    url = url.replace('_', '/')
+    if not url.startswith('http'):
+        url = 'https://' + url
+    return url
 
 
 class Crawler:
@@ -43,14 +54,14 @@ class Crawler:
             try:
                 with open(self.checkpoint_file, 'rb') as f:
                     checkpoint = pickle.load(f)
-                    self.urls_to_visit = deque(checkpoint.get('urls_to_visit', [self.start_url]))
+                    self.urls_to_visit = checkpoint.get('urls_to_visit', [self.start_url])
                     self.visited_urls = checkpoint.get('visited_urls', set())
                     self.downloaded_recipes = checkpoint.get('downloaded_recipes', set())
                     self.recipes_saved = len(self.downloaded_recipes)
                 self.logger.info(f"Loaded checkpoint: {len(self.visited_urls)} pages visited, {self.recipes_saved} recipes downloaded")
             except Exception as e:
                 self.logger.warning(f"Could not load checkpoint: {e}")
-    
+
     def save_checkpoint(self):
         checkpoint = {
             'urls_to_visit': list(self.urls_to_visit),
@@ -93,33 +104,28 @@ class Crawler:
     
     def extract_urls_from_html(self, html_content, base_url):
         urls = set()
-        
-        clean_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-        clean_content = re.sub(r'<style[^>]*>.*?</style>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
-        
-        matches = re.findall(config.URL_PATTERN, clean_content, re.IGNORECASE)
-        
+        matches = re.findall(config.URL_PATTERN, html_content, re.IGNORECASE)
+
         for match in matches:
-            if any(char in match for char in ['{', '}', '"', '&quot;']):
-                continue
-            
             absolute_url = urljoin(base_url, match)
-            
             clean_url = absolute_url.split('#')[0]
-            
             parsed = urlparse(clean_url)
-            
+
             if parsed.netloc != self.domain:
                 continue
-            
             if any(clean_url.lower().endswith(ext) for ext in config.SKIP_EXTENSIONS):
                 continue
-            
+
+            if (
+                self.domain == "foodnetwork.co.uk" and
+                "/search?" in parsed.path + ("?" + parsed.query if parsed.query else "")
+            ):
+                continue
+
             urls.add(clean_url)
-        
         return urls
     
-    def handle_retry_logic(self, url, retry_count, max_retries, error_msg):
+    def handle_retry_logic(self, url, retry_count, max_retries):
         if retry_count >= max_retries:
             self.logger.error(f"Max retries exceeded for {url}")
             return False
@@ -166,7 +172,7 @@ class Crawler:
             
         except Exception as e:
             self.logger.error(f"Unexpected error crawling {url}: {e}")
-            self.handle_retry_logic(url, retry_count, max_retries, str(e))
+            self.handle_retry_logic(url, retry_count, max_retries)
     
     def crawl(self):
         self.logger.info(f"Starting BFS crawl from {self.start_url}")
@@ -197,6 +203,108 @@ class Crawler:
 
 
 def main():
+
+    parser = argparse.ArgumentParser(description="Crawler")
+    parser.add_argument('--xml', action='store_true', help='Extract and compare recipe URLs from sitemap.xml')
+    args = parser.parse_args()
+
+    if args.xml:
+        robots_url = 'https://foodnetwork.co.uk/robots.txt'
+        try:
+            resp = requests.get(robots_url, timeout=10)
+            resp.raise_for_status()
+            lines = resp.text.splitlines()
+            sitemap_url = None
+            for line in lines:
+                if line.lower().startswith('sitemap:'):
+                    sitemap_url = line.split(':', 1)[1].strip()
+                    break
+        except Exception as e:
+            print(f'Failed to fetch robots.txt: {e}')
+            return
+
+        try:
+            sitemap_resp = requests.get(sitemap_url, timeout=15)
+            sitemap_resp.raise_for_status()
+            root = ET.fromstring(sitemap_resp.content)
+        except Exception as e:
+            print(f'Failed to fetch or parse sitemap.xml: {e}')
+            return
+
+        ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+        urls = set()
+
+        if root.tag.endswith('sitemapindex'):
+            sitemap_locs = [elem.find('ns:loc', ns).text for elem in root.findall('ns:sitemap', ns) if elem.find('ns:loc', ns) is not None]
+            for sm_url in sitemap_locs:
+                try:
+                    sm_resp = requests.get(sm_url, timeout=15)
+                    sm_resp.raise_for_status()
+                    sm_root = ET.fromstring(sm_resp.content)
+                    for url_elem in sm_root.findall('.//ns:url', ns):
+                        loc = url_elem.find('ns:loc', ns)
+                        if loc is not None and '/recipes/' in loc.text:
+                            path_parts = loc.text.split('/')
+                            if len(path_parts) >= 5 and path_parts[3] == 'recipes':
+                                urls.add(loc.text.strip())
+                except Exception as e:
+                    print(f"Failed to fetch/parse child sitemap {sm_url}: {e}")
+        else:
+            for url_elem in root.findall('.//ns:url', ns):
+                loc = url_elem.find('ns:loc', ns)
+                if loc is not None and '/recipes/' in loc.text:
+                    path_parts = loc.text.split('/')
+                    if len(path_parts) >= 5 and path_parts[3] == 'recipes':
+                        urls.add(loc.text.strip())
+
+        print(f"Found {len(urls)} recipe URLs in all sitemaps.")
+
+        html_dir = config.RAW_HTML_DIR
+        html_files = [f for f in os.listdir(html_dir) if f.endswith('.html')]
+
+        html_urls = set()
+        for filename in html_files:
+            url = filename.replace('.html', '')
+            url = url.replace('_', '/')
+            if not url.startswith('http'):
+                url = 'https://' + url
+            html_urls.add(url)
+
+        in_sitemap_not_downloaded = urls - html_urls
+        downloaded_not_in_sitemap = html_urls - urls
+
+        print(f"\nRecipes in sitemap.xml but not downloaded ({len(in_sitemap_not_downloaded)}):")
+
+        if downloaded_not_in_sitemap:
+            print(f"\nDeleting {len(downloaded_not_in_sitemap)} HTML files not in sitemap...")
+            for url in sorted(downloaded_not_in_sitemap):
+                parsed = urlparse(url)
+                url_filename = re.sub(r'[^\w\-_.]', '_', parsed.path.strip('/'))
+                domain_prefix = re.sub(r'[^\w\-_.]', '_', parsed.netloc)
+                filename = f"{domain_prefix}_{url_filename}.html"
+                filepath = os.path.join(html_dir, filename)
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        print(f"Deleted: {filepath}")
+                    except Exception as e:
+                        print(f"Failed to delete {filepath}: {e}")
+
+        print(f"\nRecipes downloaded but not in sitemap.xml ({len(downloaded_not_in_sitemap)}):")
+        print(f"\nTotal in sitemap: {len(urls)} | Downloaded: {len(html_urls)}")
+
+        if in_sitemap_not_downloaded:
+            crawler = Crawler()
+            for url in sorted(in_sitemap_not_downloaded):
+                try:
+                    crawler.crawl_page(url)
+                except Exception as e:
+                    print(f"Failed to download {url}: {e}")
+            crawler.driver.quit()
+            crawler.save_checkpoint()
+            print("\nDownload of missing recipes complete.")
+        return
+
     crawler = Crawler()
     crawler.crawl()
 

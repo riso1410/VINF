@@ -4,7 +4,7 @@ import re
 import sys
 from functools import partial
 from typing import Dict, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 import config
@@ -54,13 +54,13 @@ class DocumentStats:
 class IndexEntry:
     term: str
     document_frequency: int
-    postings: Dict[str, int] = {}
+    postings: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class SearchIndex:
-    inverted_index: Dict[str, IndexEntry] = {}
-    document_stats: Dict[str, DocumentStats] = {}
+    inverted_index: Dict[str, IndexEntry] = field(default_factory=dict)
+    document_stats: Dict[str, DocumentStats] = field(default_factory=dict)
     total_documents: int = 0
     vocabulary_size: int = 0
 
@@ -87,9 +87,6 @@ class RecipeIndexer:
             .master("local[*]") \
             .config("spark.python.worker.faulthandler.enabled", "true") \
             .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
-            .config("spark.driver.memory", "4g") \
-            .config("spark.executor.memory", "4g") \
-            .config("spark.ui.port", "4050") \
             .getOrCreate()
         
         self.stop_words_broadcast = self.spark.sparkContext.broadcast(self.stop_words)
