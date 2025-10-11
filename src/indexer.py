@@ -85,8 +85,6 @@ class RecipeIndexer:
         self.spark = SparkSession.builder \
             .appName("RecipeIndexer") \
             .master("local[*]") \
-            .config("spark.python.worker.faulthandler.enabled", "true") \
-            .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
             .getOrCreate()
         
         self.stop_words_broadcast = self.spark.sparkContext.broadcast(self.stop_words)
