@@ -50,7 +50,7 @@ SELENIUM_IMPLICIT_WAIT = 10  # seconds
 SELENIUM_JS_WAIT = 2  # Additional wait for JavaScript to load (seconds)
 
 # URL validation
-SKIP_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.xml']
+SKIP_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".css", ".js", ".xml"]
 
 # Chrome options
 CHROME_WINDOW_SIZE = "1920,1080"
@@ -71,16 +71,89 @@ INDEXER_PROGRESS_INTERVAL = 200  # Log progress every N documents
 
 # Stop words for indexing and search
 STOP_WORDS = {
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-    'to', 'was', 'will', 'with', 'or', 'but', 'if', 'then', 'this',
-    'can', 'add', 'use', 'place', 'put', 'serve', 'until', 'about',
-    'over', 'into', 'through', 'during', 'before', 'after', 'above',
-    'below', 'up', 'down', 'out', 'off', 'again', 'further', 'then',
-    'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all',
-    'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some',
-    'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
-    'too', 'very', 'just', 'now', 'recipe', 'recipes'
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "he",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "that",
+    "the",
+    "to",
+    "was",
+    "will",
+    "with",
+    "or",
+    "but",
+    "if",
+    "then",
+    "this",
+    "can",
+    "add",
+    "use",
+    "place",
+    "put",
+    "serve",
+    "until",
+    "about",
+    "over",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "up",
+    "down",
+    "out",
+    "off",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "just",
+    "now",
+    "recipe",
+    "recipes",
 }
 
 # ============================================================================
@@ -95,14 +168,14 @@ DEFAULT_TOP_K = 5  # Default number of search results to return
 # ============================================================================
 
 LOG_LEVEL = logging.INFO
-LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 # ============================================================================
 # REGEX PATTERNS
 # ============================================================================
 
 # URL patterns
-RECIPE_URL_PATTERN = '/recipes/'
+RECIPE_URL_PATTERN = "/recipes/"
 RECIPE_URL_MIN_SLASHES = 4
 
 # HTML extraction patterns
@@ -112,36 +185,36 @@ URL_PATTERN = r'<a[^>]+href\s*=\s*["\']([^"\']+)["\'][^>]*>'
 # HELPER FUNCTIONS
 # ============================================================================
 
+
 def get_chrome_options():
-    """Get configured Chrome options for Selenium"""    
+    """Get configured Chrome options for Selenium"""
     chrome_options = Options()
-    
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument(f'--window-size={CHROME_WINDOW_SIZE}')
-    chrome_options.add_argument(f'--user-agent={CHROME_USER_AGENT}')
-    
+
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument(f"--window-size={CHROME_WINDOW_SIZE}")
+    chrome_options.add_argument(f"--user-agent={CHROME_USER_AGENT}")
+
     # Disable images and CSS for faster loading
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.managed_default_content_settings.stylesheets": 2,
-        "profile.default_content_setting_values.notifications": 2
+        "profile.default_content_setting_values.notifications": 2,
     }
     chrome_options.add_experimental_option("prefs", prefs)
-    
+
     return chrome_options
+
 
 def setup_logging(log_file: str, log_level: int = LOG_LEVEL):
     """Setup logging configuration for a module"""
     import os
+
     os.makedirs(LOGS_DIR, exist_ok=True)
-    
+
     logging.basicConfig(
         level=log_level,
         format=LOG_FORMAT,
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
     return logging.getLogger(__name__)

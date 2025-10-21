@@ -1,17 +1,17 @@
-import os
 import json
+import os
 import re
 import sys
-from functools import partial
-from typing import Dict, List
 from dataclasses import dataclass, field
+from functools import partial
 from uuid import uuid4
 
-import config
-import tiktoken
-from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 import pyspark.sql.types as T
+import tiktoken
+from pyspark.sql import SparkSession
+
+import config
 
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
@@ -20,24 +20,33 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
-    text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def tokenize_text(text: str, min_word_length: int, max_word_length: int, stop_words_broadcast) -> List[str]:
+def tokenize_text(
+    text: str, min_word_length: int, max_word_length: int, stop_words_broadcast
+) -> list[str]:
     if not text:
         return []
     normalized = normalize_text(text)
     tokens = normalized.split()
     stop_words = stop_words_broadcast.value
-    return [token for token in tokens if min_word_length <= len(token) <= max_word_length and token not in stop_words and not token.isdigit()]
+    return [
+        token
+        for token in tokens
+        if min_word_length <= len(token) <= max_word_length
+        and token not in stop_words
+        and not token.isdigit()
+    ]
 
 
 def count_tokens(text: str) -> int:
     if not text:
         return 0
     return len(TOKENIZER.encode(text))
+
 
 @dataclass
 class DocumentStats:
@@ -54,18 +63,18 @@ class DocumentStats:
 class IndexEntry:
     term: str
     document_frequency: int
-    postings: Dict[str, int] = field(default_factory=dict)
+    postings: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class SearchIndex:
-    inverted_index: Dict[str, IndexEntry] = field(default_factory=dict)
-    document_stats: Dict[str, DocumentStats] = field(default_factory=dict)
+    inverted_index: dict[str, IndexEntry] = field(default_factory=dict)
+    document_stats: dict[str, DocumentStats] = field(default_factory=dict)
     total_documents: int = 0
     vocabulary_size: int = 0
 
+
 class RecipeIndexer:
-    
     def __init__(self):
         self.recipes_file = config.RECIPES_FILE
         self.index_dir = config.INDEX_DIR
@@ -78,47 +87,56 @@ class RecipeIndexer:
         self.min_word_length = config.MIN_WORD_LENGTH
         self.max_word_length = config.MAX_WORD_LENGTH
         self.stop_words = config.STOP_WORDS
-        
-        os.environ['PYSPARK_PYTHON'] = sys.executable
-        os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
-        
-        self.spark = SparkSession.builder \
-            .appName("RecipeIndexer") \
-            .master("local[*]") \
+
+        os.environ["PYSPARK_PYTHON"] = sys.executable
+        os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+        self.spark = (
+            SparkSession.builder.appName("RecipeIndexer")
+            .master("local[*]")
             .getOrCreate()
-        
+        )
+
         self.stop_words_broadcast = self.spark.sparkContext.broadcast(self.stop_words)
 
     def calculate_html_size(self, df) -> int:
         html_files_df = df.select("html_file").distinct()
-        html_file_paths = [row.html_file for row in html_files_df.collect() if row.html_file]
-        
+        html_file_paths = [
+            row.html_file for row in html_files_df.collect() if row.html_file
+        ]
+
         total_size = sum(
-            os.path.getsize(path) 
-            for path in html_file_paths 
+            os.path.getsize(path)
+            for path in html_file_paths
             if path and os.path.exists(path)
         )
-        
+
         return total_size
 
-    def save_stats(self, total_documents: int, vocabulary_size: int, total_html_size: int, total_tokens: int):
+    def save_stats(
+        self,
+        total_documents: int,
+        vocabulary_size: int,
+        total_html_size: int,
+        total_tokens: int,
+    ):
         stats_path = os.path.join(self.index_dir, "stats.jsonl")
         stats = {
             "total_documents": total_documents,
             "vocabulary_size": vocabulary_size,
             "total_tokens": total_tokens,
             "size_bytes": total_html_size,
-            "size_mb": round(total_html_size / (1024 * 1024), 2)
+            "size_mb": round(total_html_size / (1024 * 1024), 2),
         }
-        
-        with open(stats_path, 'w', encoding='utf-8') as f:
+
+        with open(stats_path, "w", encoding="utf-8") as f:
             json.dump(stats, f)
-            f.write('\n')
+            f.write("\n")
 
     def save_document_mapping(self, doc_stats_list):
         mapping_path = os.path.join(self.index_dir, "mapping.jsonl")
-        
-        with open(mapping_path, 'w', encoding='utf-8') as f:
+
+        with open(mapping_path, "w", encoding="utf-8") as f:
             for row in doc_stats_list:
                 doc_stat = {
                     "doc_id": row.doc_id,
@@ -131,26 +149,26 @@ class RecipeIndexer:
                     "ingredients": row.ingredients or [],
                 }
                 json.dump(doc_stat, f)
-                f.write('\n')
+                f.write("\n")
 
     def save_inverted_index(self, inverted_index_list):
         index_path = os.path.join(self.index_dir, "index.jsonl")
-        
-        with open(index_path, 'w', encoding='utf-8') as f:
+
+        with open(index_path, "w", encoding="utf-8") as f:
             for row in inverted_index_list:
                 term_entry = {
                     "term": row.term,
                     "document_frequency": row.document_frequency,
-                    "postings": row.postings
+                    "postings": row.postings,
                 }
                 json.dump(term_entry, f)
-                f.write('\n')
+                f.write("\n")
 
     def build_index(self):
         if not os.path.exists(self.recipes_file):
             self.logger.error(f"Recipes file not found: {self.recipes_file}")
             return
-        
+
         self.logger.info(f"Building index from {self.recipes_file}")
 
         uuid_udf = F.udf(lambda: str(uuid4()), T.StringType())
@@ -159,37 +177,53 @@ class RecipeIndexer:
 
         total_documents = df.count()
         total_html_size = self.calculate_html_size(df)
-        
-        self.logger.info(f"Indexing {total_documents} documents ({total_html_size / (1024*1024):.2f} MB)")
 
-        df = df.withColumn("full_text", F.concat_ws(" ",
-            F.col("title"),
-            F.col("description"),
-            F.concat_ws(" ", F.col("ingredients")),
-            F.col("method")
-        ))
+        self.logger.info(
+            f"Indexing {total_documents} documents ({total_html_size / (1024 * 1024):.2f} MB)"
+        )
+
+        df = df.withColumn(
+            "full_text",
+            F.concat_ws(
+                " ",
+                F.col("title"),
+                F.col("description"),
+                F.concat_ws(" ", F.col("ingredients")),
+                F.col("method"),
+            ),
+        )
 
         tokenize_udf = F.udf(
-            partial(tokenize_text, 
-                    min_word_length=self.min_word_length, 
-                    max_word_length=self.max_word_length, 
-                    stop_words_broadcast=self.stop_words_broadcast),
-            T.ArrayType(T.StringType())
+            partial(
+                tokenize_text,
+                min_word_length=self.min_word_length,
+                max_word_length=self.max_word_length,
+                stop_words_broadcast=self.stop_words_broadcast,
+            ),
+            T.ArrayType(T.StringType()),
         )
         df = df.withColumn("tokens", tokenize_udf(F.col("full_text")))
 
         term_doc_df = df.select("doc_id", F.explode("tokens").alias("term"))
-        tf_df = term_doc_df.groupBy("term", "doc_id").count().withColumnRenamed("count", "tf")
-        
-        postings_df = tf_df.groupBy("term").agg(
-            F.collect_list(F.struct(F.col("doc_id"), F.col("tf"))).alias("postings_struct")
+        tf_df = (
+            term_doc_df.groupBy("term", "doc_id")
+            .count()
+            .withColumnRenamed("count", "tf")
         )
-        
-        inverted_index_df = postings_df.withColumn(
-            "postings", F.map_from_entries(F.col("postings_struct"))
-        ).withColumn(
-            "document_frequency", F.size(F.col("postings_struct"))
-        ).select("term", "document_frequency", "postings")
+
+        postings_df = tf_df.groupBy("term").agg(
+            F.collect_list(F.struct(F.col("doc_id"), F.col("tf"))).alias(
+                "postings_struct"
+            )
+        )
+
+        inverted_index_df = (
+            postings_df.withColumn(
+                "postings", F.map_from_entries(F.col("postings_struct"))
+            )
+            .withColumn("document_frequency", F.size(F.col("postings_struct")))
+            .select("term", "document_frequency", "postings")
+        )
 
         inverted_index_df.cache()
         vocabulary_size = inverted_index_df.count()
@@ -197,12 +231,23 @@ class RecipeIndexer:
         tiktoken_len_udf = F.udf(count_tokens, T.IntegerType())
 
         doc_stats_df = df.select(
-            "doc_id", "url", "title", "chef", "difficulty", "prep_time", "servings"
+            "doc_id",
+            "url",
+            "title",
+            "chef",
+            "difficulty",
+            "prep_time",
+            "servings",
+            "ingredients",
         )
-        
-        total_tokens = df.withColumn("token_count", tiktoken_len_udf(F.col("full_text"))) \
-                         .agg(F.sum("token_count")).collect()[0][0] or 0
-        
+
+        total_tokens = (
+            df.withColumn("token_count", tiktoken_len_udf(F.col("full_text")))
+            .agg(F.sum("token_count"))
+            .collect()[0][0]
+            or 0
+        )
+
         doc_stats_list = doc_stats_df.collect()
         inverted_index_list = inverted_index_df.collect()
 
