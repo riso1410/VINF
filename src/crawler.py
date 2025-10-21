@@ -2,13 +2,15 @@ import os
 import re
 import argparse
 import requests
+import time
+import random
 import xml.etree.ElementTree as ET
+import pickle as pkl
+
 from urllib.parse import urljoin, urlparse
 from collections import deque
-import time
-import pickle
-import random
 from selenium import webdriver
+
 import config
 
 
@@ -53,7 +55,7 @@ class Crawler:
         if os.path.exists(self.checkpoint_file):
             try:
                 with open(self.checkpoint_file, 'rb') as f:
-                    checkpoint = pickle.load(f)
+                    checkpoint = pkl.load(f)
                     self.urls_to_visit = checkpoint.get('urls_to_visit', [self.start_url])
                     self.visited_urls = checkpoint.get('visited_urls', set())
                     self.downloaded_recipes = checkpoint.get('downloaded_recipes', set())
@@ -69,7 +71,7 @@ class Crawler:
             'downloaded_recipes': self.downloaded_recipes
         }
         with open(self.checkpoint_file, 'wb') as f:
-            pickle.dump(checkpoint, f)
+            pkl.dump(checkpoint, f)
     
     def save_html_content(self, url, html_content):
         parsed = urlparse(url)
@@ -158,6 +160,7 @@ class Crawler:
             
             urls = self.extract_urls_from_html(html_content, url)
             
+            new_recipe_urls = 0
             new_urls = sum(1 for found_url in urls if found_url not in self.visited_urls)
             new_recipe_urls = sum(1 for found_url in urls if found_url not in self.visited_urls and self.is_recipe_url(found_url))
             
@@ -165,10 +168,7 @@ class Crawler:
                 if found_url not in self.visited_urls:
                     self.urls_to_visit.append(found_url)
             
-            if new_recipe_urls > 0:
-                self.logger.info(f"Found {new_urls} new URLs ({new_recipe_urls} recipes) on {url}")
-            else:
-                self.logger.info(f"Found {new_urls} new URLs (0 recipes) on {url}")
+            self.logger.info(f"Found {new_urls} new URLs ({new_recipe_urls} recipes) on {url}")
             
         except Exception as e:
             self.logger.error(f"Unexpected error crawling {url}: {e}")

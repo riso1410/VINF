@@ -88,10 +88,7 @@ STOP_WORDS = {
 # ============================================================================
 
 # Search behavior
-DEFAULT_TOP_K = 1  # Default number of search results to return
-
-# IDF calculation
-IDF_SMOOTHING = 1  # Smoothing factor to avoid division by zero
+DEFAULT_TOP_K = 5  # Default number of search results to return
 
 # ============================================================================
 # LOGGING SETTINGS

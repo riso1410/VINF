@@ -127,7 +127,8 @@ class RecipeIndexer:
                     "chef": row.chef or "",
                     "difficulty": row.difficulty or "",
                     "prep_time": row.prep_time or "",
-                    "servings": row.servings or ""
+                    "servings": row.servings or "",
+                    "ingredients": row.ingredients or [],
                 }
                 json.dump(doc_stat, f)
                 f.write('\n')

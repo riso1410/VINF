@@ -56,48 +56,25 @@ class RecipeSearchEngine:
                         "df": entry["document_frequency"],
                         "postings": entry["postings"]
                     }
-    
-    def normalize_text(self, text: str) -> str:
-        if not text:
-            return ""
-        text = text.lower()
-        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-    
+        
     def tokenize(self, text: str) -> List[str]:
         if not text:
             return []
-        normalized = self.normalize_text(text)
-        tokens = normalized.split()
+        text = text.lower()
+        tokens = text.split()
         return [
             token for token in tokens
             if config.MIN_WORD_LENGTH <= len(token) <= config.MAX_WORD_LENGTH
             and token not in config.STOP_WORDS
-            and not token.isdigit()
         ]
 
-    def idf_robertson(self, term: str, tf: int, df: int) -> float:
+    def idf_robertson(self, tf: int, df: int) -> float:
         # BM25/Robertson IDF with TF in denominator
         return math.log((self.total_documents - df + 0.5) / (df + 0.5 + tf))
 
-    def idf_classic(self, term: str, tf: int, df: int) -> float:
+    def idf_classic(self, tf: int, df: int) -> float:
         # Classic TF-IDF with TF in denominator
         return math.log(self.total_documents / (df + tf)) if (df + tf) > 0 else 0.0
-
-    def calculate_idf_score(self, term: str, doc_id: str, method: str = 'robertson') -> float:
-        if term not in self.inverted_index:
-            return 0.0
-        postings = self.inverted_index[term]["postings"]
-        if doc_id not in postings:
-            return 0.0
-        tf = postings[doc_id]
-        df = self.inverted_index[term]["df"]
-        if method == 'classic':
-            return self.idf_classic(term, tf, df)
-        else:
-            return self.idf_robertson(term, tf, df)
-    
 
     def search(self, query: str, idf_method: str = 'robertson', top_k: int = None) -> List[SearchResult]:
         """
@@ -115,30 +92,43 @@ class RecipeSearchEngine:
 
         if not candidate_docs:
             return []
-
+        
         doc_scores: Dict[str, float] = {}
         for doc_id in candidate_docs:
             score = 0.0
             for term in query_terms:
-                score += self.calculate_idf_score(term, doc_id, method=idf_method)
+                if term in self.inverted_index:
+                    postings = self.inverted_index[term]["postings"]
+                    if doc_id in postings:
+                        tf = postings[doc_id]
+                        df = self.inverted_index[term]["df"]
+                        if idf_method == 'classic':
+                            idf = self.idf_classic(tf, df)
+                        else:
+                            idf = self.idf_robertson(tf, df)
+                        score += tf * idf
             if score > 0:
                 doc_scores[doc_id] = score
+
+        if not doc_scores:
+            return []
 
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
         results = []
         for doc_id, score in sorted_docs:
-            doc_info = self.document_stats[doc_id]
-            results.append(SearchResult(
-                doc_id=doc_id,
-                url=doc_info["url"],
-                title=doc_info["title"],
-                score=score,
-                chef=doc_info.get("chef", ""),
-                difficulty=doc_info.get("difficulty", ""),
-                prep_time=doc_info.get("prep_time", ""),
-                servings=doc_info.get("servings", "")
-            ))
+            doc_info = self.document_stats.get(doc_id)
+            if doc_info:
+                results.append(SearchResult(
+                    doc_id=doc_id,
+                    url=doc_info["url"],
+                    title=doc_info["title"],
+                    score=score,
+                    chef=doc_info.get("chef", ""),
+                    difficulty=doc_info.get("difficulty", ""),
+                    prep_time=doc_info.get("prep_time", ""),
+                    servings=doc_info.get("servings", "")
+                ))
 
         return results
     
