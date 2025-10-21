@@ -1,7 +1,6 @@
 import os
 import json
 import math
-import re
 from typing import Dict, List, Set
 from dataclasses import dataclass
 
@@ -68,19 +67,13 @@ class RecipeSearchEngine:
             and token not in config.STOP_WORDS
         ]
 
-    def idf_robertson(self, tf: int, df: int) -> float:
-        # BM25/Robertson IDF with TF in denominator
-        return math.log((self.total_documents - df + 0.5) / (df + 0.5 + tf))
+    def idf_robertson(self, df: int) -> float:
+        return math.log((self.total_documents - df + 0.5) / (df + 0.5))
 
-    def idf_classic(self, tf: int, df: int) -> float:
-        # Classic TF-IDF with TF in denominator
-        return math.log(self.total_documents / (df + tf)) if (df + tf) > 0 else 0.0
+    def idf_classic(self, df: int) -> float:
+        return math.log(self.total_documents / (df))
 
-    def search(self, query: str, idf_method: str = 'robertson', top_k: int = None) -> List[SearchResult]:
-        """
-        Unified search method. Uses IDF as score, with two IDF calculation options (robertson or classic), both using TF in denominator.
-        """
-        top_k = top_k if top_k is not None else config.DEFAULT_TOP_K
+    def search(self, query: str, top_k: int, idf_method: str = 'robertson') -> List[SearchResult]:
         query_terms = self.tokenize(query)
         if not query_terms:
             return []
@@ -103,9 +96,9 @@ class RecipeSearchEngine:
                         tf = postings[doc_id]
                         df = self.inverted_index[term]["df"]
                         if idf_method == 'classic':
-                            idf = self.idf_classic(tf, df)
+                            idf = self.idf_classic(df)
                         else:
-                            idf = self.idf_robertson(tf, df)
+                            idf = self.idf_robertson(df)
                         score += tf * idf
             if score > 0:
                 doc_scores[doc_id] = score
@@ -210,7 +203,7 @@ def main():
                 print()
                 continue
 
-            results = search_engine.search(query, idf_method=idf_method, top_k=config.DEFAULT_TOP_K)
+            results = search_engine.search(query, top_k=config.DEFAULT_TOP_K, idf_method=idf_method)
             search_engine.display_results(results)
 
         except KeyboardInterrupt:
