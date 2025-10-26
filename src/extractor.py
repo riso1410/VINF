@@ -53,11 +53,8 @@ class RecipeScraper:
 
     def extract_description(self, markdown_content: str) -> str:
         patterns = [
-            # 1. Icon-based: after [Rate] and icons, up to blank line, heading, image, or 'Featured In:'
             r"\[Rate\]\(#vote\).*?(?:\n\s*\* !\[A fallback image for Food Network UK\][^\n]*)+\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)",
-            # 2. Image/paragraph-based: after [Rate], optional image, then paragraph
             r"\[Rate\]\(#vote\)\s*\n\s*!\[[^\]]*\]\([^\)]*\)\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)",
-            # 3. Fallback: just after [Rate], up to blank line, heading, or 'Featured In:'
             r"\[Rate\]\(#vote\)\s*\n\s*(.*?)(?=\n{2,}|^## |!\[A fallback image for Food Network UK\]|Featured In:)",
         ]
         for pattern in patterns:
@@ -102,22 +99,18 @@ class RecipeScraper:
         return ""
 
     def extract_author(self, markdown_content: str) -> str:
-        pattern = (
-            r'\[([^\]]+)\]\(https://foodnetwork\.co\.uk/chefs/[^\)]*?"Go to Author"\)'
-        )
-        match = re.search(pattern, markdown_content)
+        pattern = r'\[!\[\]\(\)\s*\n([^)\[]+)\]\(https://foodnetwork\.co\.uk/chefs/[^\)]*"Go to Author"\)\s*\n(?:!\[A fallback image for Food Network UK\]\(/images/illustrations/meal-2\.svg\))?(?:!\[A fallback image for Food Network UK\]\(/images/illustrations/leaf\.svg\))?(?:!\[A fallback image for Food Network UK\]\(/images/illustrations/stirring\.svg\))?'
+        match = re.search(pattern, markdown_content, re.DOTALL)
         if match:
-            return self.clean_text(match.group(1))
-
+            author = match.group(1)
+            return self.clean_text(author)
         return ""
 
     def extract_prep_time(self, markdown_content: str) -> str:
-        # Look for time after time icon - handles formats like "15 MINS", "1 HRS 30 MINS", etc.
         pattern = r"!\[A fallback image for Food Network UK\]\(/images/time-icon\.svg\)((?:\d+\s+HRS?)?\s*\d+\s+(?:MINS?|HRS?))"
         match = re.search(pattern, markdown_content, re.IGNORECASE)
         if match:
             time_str = match.group(1).strip()
-            # Normalize time units
             time_str = re.sub(r"\bMINS?\b", "min", time_str, flags=re.IGNORECASE)
             time_str = re.sub(r"\bHRS?\b", "hr", time_str, flags=re.IGNORECASE)
             return self.clean_text(time_str)
@@ -189,9 +182,8 @@ class RecipeScraper:
         # Read the markdown content directly
         md = MarkItDown()
         result = md.convert(html_file)
-        markdown_content = (
-            result.text_content if hasattr(result, "text_content") else str(result)
-        )
+        markdown_content = result.text_content
+        
 
         # Save markdown file
         # md_file_path = html_file.replace('.html', '.md')

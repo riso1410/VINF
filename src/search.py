@@ -70,7 +70,7 @@ class RecipeSearchEngine:
         return math.log((self.total_documents - df + 0.5) / (df + 0.5))
 
     def idf_classic(self, df: int) -> float:
-        return math.log(self.total_documents / (df))
+        return math.log(self.total_documents / df)
 
     def search(
         self, query: str, top_k: int, idf_method: str = "robertson"
@@ -79,6 +79,7 @@ class RecipeSearchEngine:
         if not query_terms:
             return []
 
+        print(f"Tokenized query terms: {query_terms}")
         candidate_docs: set[str] = set()
         for term in query_terms:
             if term in self.inverted_index:
