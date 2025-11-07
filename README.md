@@ -1,47 +1,228 @@
-# VINF
+# VINF - Food Network UK Recipe Search with Wikipedia Mapping
 
-Pipeline for harvesting, normalizing, indexing, and searching Food Network UK recipes. The project combines a Selenium crawler, HTML-to-JSONL extractor, PySpark indexer, and CLI search client using 2 IDF methods.
+Information retrieval pipeline implementing web crawling, data extraction, PySpark distributed processing, and Wikipedia article mapping. Built for FIIT's VINF course assignment.
 
 ## Features
-- **Headless crawl**: Breadth-first Selenium crawler with checkpointing, recipe URL filtering, and optional sitemap reconciliation (`--xml`).
-- **Structured scrape**: HTML extraction to JSON Lines, capturing titles, ingredients, method, chef, difficulty, timing, and servings.
-- **TF-IDF indexing**: PySpark job that tokenizes (word-based) content, removes stop words, stores inverted index, document stats, and corpus metrics.
-- **Interactive search**: Terminal UI supporting Robertson (BM25-style) and classical IDF scoring.
 
-## Prerequisites
-- Python 3.11.* (match the version configured for PySpark).  
-- Google Chrome and a compatible ChromeDriver discoverable on `PATH`.  
-- Java 8+ runtime for Spark; set `JAVA_HOME`/`SPARK_HOME` if not globally installed.  
+- **Headless crawler**: Breadth-first Selenium crawler with checkpointing and resume support
+- **Structured extraction**: HTML to JSONL conversion capturing recipe metadata (ingredients, method, chef, timing, etc.)
+- **PySpark indexing**: Distributed TF-IDF indexing with tokenization, stop word removal, and corpus statistics
+- **Wikipedia mapping**: PySpark-based recipe-to-Wikipedia article mapping using ingredient similarity
+- **Fault-tolerant processing**: Multi-stage checkpointing for safe interruption and resume
+- **Dockerized deployment**: Complete environment with all dependencies pre-configured
 
-## Setup
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-```
+## Quick Start (Docker - Recommended)
+
+### 1. Build Docker Image
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker-compose build
+# Takes 5-10 minutes (installs Chrome, Java, PySpark dependencies)
 ```
-Ensure `chromedriver` matches your Chrome version; adjust the `PATH` or pass a custom location via Selenium environment variables if needed.
 
-## Workflow
-1. **Crawl** – collect HTML:  
-   `python src/crawler.py` (add `--xml` to compare against `sitemap.xml` and download missing recipes).  
-2. **Scrape** – convert HTML to structured JSONL:  
-   `python src/extractor.py`
-3. **Index** – build the TF-IDF search index with PySpark:  
-   `python src/indexer.py`
-4. **Search** – query the index interactively:  
-   `python src/search.py` → type `change` to toggle between Robertson and classic IDF.  
-Intermediate artifacts live in `data/` and are safe to regenerate; logs are emitted to `logs/`.
+### 2. Run Complete Pipeline
+```bash
+# Step 1: Crawl recipes
+docker-compose run --rm recipe-processor python src/crawler.py
 
-## Project Layout
-- `src/` – core modules (`crawler.py`, `extractor.py`, `indexer.py`, `search.py`, `config.py`).  
-- `data/` – pipeline outputs (`raw_html/`, `scraped/`, `index/`, checkpoints).  
-- `logs/` – per-module log files configured in `config.py`.  
-- `crawler.mmd` / `crawler.svg` – architecture diagrams for documentation.
+# Step 2: Extract structured data
+docker-compose run --rm recipe-processor python src/extractor.py
+
+# Step 3: Build search index
+docker-compose run --rm recipe-processor python src/indexer.py
+```
+
+### 3. Download Wikipedia Dump
+```bash
+# Downloads ~20GB compressed Wikipedia dump (enwiki-20251020)
+./scripts/download_wiki.sh
+```
+
+### 4. Map Recipes to Wikipedia
+```bash
+# PySpark job with automatic checkpointing (1-2 hours)
+# Can safely Ctrl+C and resume later!
+docker-compose run --rm wiki-processor python src/wiki_mapper_spark.py
+
+# To start fresh (delete checkpoints):
+WIKI_CLEAN_CHECKPOINTS=true docker-compose run --rm wiki-processor python src/wiki_mapper_spark.py
+```
+
+### 5. Generate Assignment Statistics
+```bash
+# Creates wiki_analysis_summary.json
+docker-compose run --rm wiki-processor python src/analyze_wiki_mapping.py
+```
+
+## Project Structure
+
+```
+VINF/
+├── src/
+│   ├── crawler.py              # Selenium-based web crawler
+│   ├── extractor.py            # HTML → JSONL extraction
+│   ├── indexer.py              # PySpark TF-IDF indexing
+│   ├── wiki_mapper_spark.py    # Wikipedia mapping with PySpark
+│   ├── analyze_wiki_mapping.py # Statistics generation
+│   ├── spark_processing_demo.py # Demo for assignment presentation
+│   ├── search.py               # Basic TF-IDF search
+│   └── config.py               # Centralized configuration
+├── scripts/
+│   └── download_wiki.sh        # Wikipedia dump download
+├── checkpoints/
+│   └── wiki_mapping_checkpoint/ # PySpark checkpoints
+├── data/
+│   ├── raw_html/               # Crawled HTML files
+│   ├── scraped/                # Extracted recipes (JSONL)
+│   └── index/                  # Search index + Wikipedia mappings
+├── Dockerfile                  # Docker image definition
+├── docker-compose.yml          # Service definitions
+└── VINF_ASSIGNMENT.md          # Assignment documentation (Slovak)
+```
+
+## Pipeline Stages
+
+### Stage 1: Crawl (src/crawler.py)
+- Breadth-first search of Food Network UK
+- Recipe URL filtering (`/recipes/{slug}` pattern)
+- Checkpoint/resume support via pickle serialization
+- Output: HTML files in `data/raw_html/`
+
+### Stage 2: Extract (src/extractor.py)
+- HTML → Markdown conversion (MarkItDown library)
+- Regex-based structured data extraction
+- Output: `data/scraped/recipes.jsonl` (one recipe per line)
+
+### Stage 3: Index (src/indexer.py)
+- PySpark distributed processing
+- Tokenization, stop word removal, TF-IDF calculation
+- Output: `data/index/mapping.jsonl`, `index.jsonl`, `stats.jsonl`
+
+### Stage 4: Wikipedia Mapping (src/wiki_mapper_spark.py)
+- Processes 50GB+ Wikipedia XML dumps with PySpark
+- Streams `.bz2` dumps directly in memory batches (size via `WIKI_STREAM_BATCH_SIZE`) without writing intermediate XML files
+- Threshold configurable via `WIKI_MIN_MATCH_SCORE` (defaults to 0.0 to keep the best candidate for every recipe)
+- Debug option `WIKI_DEBUG_STOP_AFTER_FIRST_MATCH=true` halts right after the first recipe gets mapped (useful for inspecting early matches)
+- Output written once per run to `WIKI_OUTPUT_PATH` (default `data/index/wiki_recipes.jsonl`) which mirrors the original recipe schema plus `wiki_title`, `wiki_url`, `wiki_ingredients`, and `match_score`
+- Extracts ingredients using REGEX patterns
+- Ingredient-based Jaccard similarity matching
+- Multi-stage checkpointing for fault tolerance
+- Output: `data/index/wiki_recipes.jsonl`
+
+### Stage 5: Analysis (src/analyze_wiki_mapping.py)
+- Statistics on unique Wikipedia pages joined
+- Top matched articles
+- Extracted attributes demonstration
+- Output: `data/index/wiki_analysis_summary.json`
+
+## Docker Services
+
+### recipe-processor
+- Main pipeline service (crawl, extract, index)
+- Memory limit: 4GB
+- Mounts: data/, logs/, src/, scripts/
+
+### wiki-processor
+- Wikipedia processing with PySpark
+- Memory limit: 8GB (configurable)
+- Mounts: data/, logs/, src/, scripts/, wiki_data/
+
+## Assignment Deliverables
+
+This project implements the following VINF assignment requirements:
+
+1. **Distributed Processing**: PySpark for indexing and Wikipedia mapping
+2. **Wikipedia Integration**: 50GB+ XML dump processing with spark-xml
+3. **REGEX Extraction**: 4 patterns for ingredient extraction from wikitext
+4. **Join Operation**: Explode + inner join strategy for recipe-Wikipedia mapping
+5. **Statistics**: Analysis of unique Wikipedia pages and extracted attributes
+
+See `VINF_ASSIGNMENT.md` for detailed documentation (in Slovak).
 
 ## Configuration
-Edit `src/config.py` to change the start URL, directory paths, Selenium chrome options, retry limits, stop-word list, and search defaults. All modules read from this single source, so adjust there rather than hard-coding values elsewhere.
+
+All modules read from `src/config.py`:
+- Paths: `DATA_DIR`, `RAW_HTML_DIR`, `SCRAPED_DIR`, `INDEX_DIR`
+- Crawler: `START_URL`, `MAX_RETRIES`, `SKIP_EXTENSIONS`
+- Indexer: `MIN_WORD_LENGTH`, `MAX_WORD_LENGTH`, `STOP_WORDS`
+- Search: `DEFAULT_TOP_K` results per query
+
+## Local Setup (Without Docker)
+
+**Note**: Docker is strongly recommended. Local setup requires manual dependency management.
+
+```bash
+# Create virtual environment (Python 3.11.x required)
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+.\.venv\Scripts\activate   # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Ensure ChromeDriver is on PATH
+# Set JAVA_HOME for PySpark
+```
+
+## Windows Compatibility
+
+The project includes Windows workarounds for PySpark's Hadoop dependency. All Spark scripts automatically detect Windows and apply the fix:
+
+```python
+if sys.platform == "win32":
+    os.environ["HADOOP_HOME"] = tempfile.gettempdir()
+    os.environ["HADOOP_OPTS"] = "-Djava.library.path="
+```
+
+## Output Files
+
+### Core Pipeline
+- `data/raw_html/*.html` - Crawled HTML pages
+- `data/scraped/recipes.jsonl` - Extracted recipes
+- `data/index/mapping.jsonl` - Recipe metadata (doc_id → URL, title, etc.)
+- `data/index/index.jsonl` - Inverted index (term → postings)
+- `data/index/stats.jsonl` - Corpus statistics
+
+### Wikipedia Mapping
+- `data/index/wiki_recipes.jsonl` - Recipes with Wikipedia mappings
+- `data/index/wiki_index.jsonl` - Copy of original index
+- `data/index/wiki_stats.jsonl` - Copy of original stats
+- `data/index/wiki_analysis_summary.json` - Assignment statistics
+
+### Checkpoints
+- `data/crawler_checkpoint.pkl` - Crawler state (resume support)
+- `checkpoints/wiki_mapping_checkpoint/` - PySpark checkpoints (resume support)
+
+## Search
+
+Basic TF-IDF search with two IDF methods:
+
+```bash
+# Run interactive search
+docker-compose run --rm recipe-processor python src/search.py
+
+# Commands:
+# - Type query to search
+# - "change" to toggle IDF method (Robertson vs Classic)
+# - "quit" to exit
+```
+
+## Logs
+
+Each module writes to separate log files in `logs/`:
+- `crawler.log` - Page visits, recipes saved, errors
+- `scraper.log` - HTML processing, extraction warnings
+- `indexer.log` - Spark job progress, index statistics
+
+## Common Issues
+
+1. **Docker build timeout**: First build takes 5-10 minutes (Chrome, Java, dependencies)
+2. **Wikipedia mapping OOM**: Increase `mem_limit` in docker-compose.yml (default: 8GB)
+3. **Mapping interrupted**: Run `./scripts/run_mapping.sh` again to resume from checkpoint
+4. **Windows Spark errors**: Automatically handled by tempfile workaround
+5. **Permission errors (Linux/Mac)**: `chmod 777 data/ logs/ wiki_data/` for volume mounts
+
+## Documentation
+
+- `CLAUDE.md` - Detailed technical documentation for Claude Code
+- `VINF_ASSIGNMENT.md` - Assignment requirements and implementation (Slovak)
+- `crawler.mmd` / `crawler.svg` - Architecture diagrams

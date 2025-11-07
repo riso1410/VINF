@@ -21,6 +21,7 @@ RAW_HTML_DIR = os.path.join(PROJECT_ROOT, "data", "raw_html")
 SCRAPED_DIR = os.path.join(PROJECT_ROOT, "data", "scraped")
 INDEX_DIR = os.path.join(PROJECT_ROOT, "data", "index")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 
 # File paths
 URLS_FILE = os.path.join(PROJECT_ROOT, "data", "urls.txt")
@@ -169,6 +170,28 @@ DEFAULT_TOP_K = 5  # Default number of search results to return
 
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+
+# ============================================================================
+# SPARK EXTRACTION SETTINGS
+# ============================================================================
+
+RECIPES_SPARK_LOG = os.path.join(LOGS_DIR, "recipes_extraction_spark.log")
+RECIPES_MAPPING_FILE = os.path.join(INDEX_DIR, "mapping.jsonl")
+RECIPES_SPARK_FILES_PER_PARTITION = 200
+
+# ============================================================================
+# WIKI MAPPER SETTINGS
+# ============================================================================
+
+WIKI_SPARK_LOG = os.path.join(LOGS_DIR, "wiki_mapper_spark.log")
+WIKI_DUMP_FILE = "enwiki-20251020-pages-articles.xml.bz2"
+WIKI_DUMP_PATH = os.path.join(DATA_DIR, "wiki_data", WIKI_DUMP_FILE)
+WIKI_OUTPUT_PATH = os.path.join(INDEX_DIR, "wiki_mapping.jsonl")
+WIKI_STREAM_BATCH_SIZE = 500
+WIKI_CHECKPOINT_DIR = os.path.join(CHECKPOINTS_DIR, "wiki_mapping_checkpoint")
+WIKI_CHECKPOINT_FILE = os.path.join(WIKI_CHECKPOINT_DIR, "state.json")
+WIKI_CHECKPOINT_FLUSH_BATCHES = int(os.getenv("WIKI_CHECKPOINT_FLUSH_BATCHES", "1"))
+WIKI_CLEAN_CHECKPOINTS = os.getenv("WIKI_CLEAN_CHECKPOINTS", "false").lower() in {"1", "true", "yes", "on"}
 
 # ============================================================================
 # REGEX PATTERNS

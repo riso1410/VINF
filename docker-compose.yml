@@ -1,0 +1,18 @@
+services:
+  wiki-mapper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wiki-mapper
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+      - ./src:/app/src
+    environment:
+      - PYSPARK_PYTHON=/usr/local/bin/python
+      - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
+      - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    mem_limit: 10g
+    cpus: "8"
+    command: ["./scripts/run_spark_pipeline.sh"]
