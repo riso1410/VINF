@@ -9,10 +9,11 @@ services:
       - ./logs:/app/logs
       - ./scripts:/app/scripts
       - ./src:/app/src
+      - ./checkpoints:/app/checkpoints
     environment:
       - PYSPARK_PYTHON=/usr/local/bin/python
       - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
       - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-    mem_limit: 10g
+    mem_limit: 8g
     cpus: "8"
     command: ["./scripts/run_spark_pipeline.sh"]

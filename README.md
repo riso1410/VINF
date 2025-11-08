@@ -16,40 +16,31 @@ Information retrieval pipeline implementing web crawling, data extraction, PySpa
 ### 1. Build Docker Image
 ```bash
 docker-compose build
-# Takes 5-10 minutes (installs Chrome, Java, PySpark dependencies)
 ```
 
 ### 2. Run Complete Pipeline
 ```bash
-# Step 1: Crawl recipes
 docker-compose run --rm recipe-processor python src/crawler.py
 
-# Step 2: Extract structured data
 docker-compose run --rm recipe-processor python src/extractor.py
 
-# Step 3: Build search index
 docker-compose run --rm recipe-processor python src/indexer.py
 ```
 
 ### 3. Download Wikipedia Dump
 ```bash
-# Downloads ~20GB compressed Wikipedia dump (enwiki-20251020)
 ./scripts/download_wiki.sh
 ```
 
 ### 4. Map Recipes to Wikipedia
 ```bash
-# PySpark job with automatic checkpointing (1-2 hours)
-# Can safely Ctrl+C and resume later!
 docker-compose run --rm wiki-processor python src/wiki_mapper_spark.py
 
-# To start fresh (delete checkpoints):
-WIKI_CLEAN_CHECKPOINTS=true docker-compose run --rm wiki-processor python src/wiki_mapper_spark.py
+docker-compose run --rm wiki-processor python src/wiki_mapper_spark.py
 ```
 
 ### 5. Generate Assignment Statistics
 ```bash
-# Creates wiki_analysis_summary.json
 docker-compose run --rm wiki-processor python src/analyze_wiki_mapping.py
 ```
 
@@ -87,7 +78,7 @@ VINF/
 - Checkpoint/resume support via pickle serialization
 - Output: HTML files in `data/raw_html/`
 
-### Stage 2: Extract (src/extractor.py)
+### Stage 2: Extract (src/extractor.py or src/recipes_extraction_spark.py)
 - HTML → Markdown conversion (MarkItDown library)
 - Regex-based structured data extraction
 - Output: `data/scraped/recipes.jsonl` (one recipe per line)
@@ -99,11 +90,16 @@ VINF/
 
 ### Stage 4: Wikipedia Mapping (src/wiki_mapper_spark.py)
 - Processes 50GB+ Wikipedia XML dumps with PySpark
-- Streams `.bz2` dumps directly in memory batches (size via `WIKI_STREAM_BATCH_SIZE`) without writing intermediate XML files
+- Streams `.bz2` dumps directly in memory batches (size via `WIKI_STREAM_BATCH_SIZE`) without writing intermediate XML files; when `WIKI_DUMP_INDEX_PATH` points at the multistream index the mapper fans chunks across `WIKI_STREAM_WORKERS` parallel readers
 - Threshold configurable via `WIKI_MIN_MATCH_SCORE` (defaults to 0.0 to keep the best candidate for every recipe)
 - Debug option `WIKI_DEBUG_STOP_AFTER_FIRST_MATCH=true` halts right after the first recipe gets mapped (useful for inspecting early matches)
 - Output written once per run to `WIKI_OUTPUT_PATH` (default `data/index/wiki_recipes.jsonl`) which mirrors the original recipe schema plus `wiki_title`, `wiki_url`, `wiki_ingredients`, and `match_score`
-- Extracts ingredients using REGEX patterns
+- Multi-source ingredient extraction:
+  - 15+ infobox types (food, dish, beverage, cheese, bread, cake, dessert, soup, sauce, etc.)
+  - Article sections (Ingredients, Recipe, Composition)
+  - Category-based detection for pages without explicit ingredient lists
+  - Handles nested templates: `{{plainlist|* item1\n* item2}}`
+  - Handles inline format: `[[fish]], rice, salt`
 - Ingredient-based Jaccard similarity matching
 - Multi-stage checkpointing for fault tolerance
 - Output: `data/index/wiki_recipes.jsonl`
@@ -124,7 +120,7 @@ VINF/
 ### wiki-processor
 - Wikipedia processing with PySpark
 - Memory limit: 8GB (configurable)
-- Mounts: data/, logs/, src/, scripts/, wiki_data/
+- Mounts: data/, logs/, src/, scripts/, checkpoints/ (persisted locally)
 
 ## Assignment Deliverables
 
@@ -146,33 +142,6 @@ All modules read from `src/config.py`:
 - Indexer: `MIN_WORD_LENGTH`, `MAX_WORD_LENGTH`, `STOP_WORDS`
 - Search: `DEFAULT_TOP_K` results per query
 
-## Local Setup (Without Docker)
-
-**Note**: Docker is strongly recommended. Local setup requires manual dependency management.
-
-```bash
-# Create virtual environment (Python 3.11.x required)
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-.\.venv\Scripts\activate   # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Ensure ChromeDriver is on PATH
-# Set JAVA_HOME for PySpark
-```
-
-## Windows Compatibility
-
-The project includes Windows workarounds for PySpark's Hadoop dependency. All Spark scripts automatically detect Windows and apply the fix:
-
-```python
-if sys.platform == "win32":
-    os.environ["HADOOP_HOME"] = tempfile.gettempdir()
-    os.environ["HADOOP_OPTS"] = "-Djava.library.path="
-```
-
 ## Output Files
 
 ### Core Pipeline
@@ -188,41 +157,10 @@ if sys.platform == "win32":
 - `data/index/wiki_stats.jsonl` - Copy of original stats
 - `data/index/wiki_analysis_summary.json` - Assignment statistics
 
-### Checkpoints
+### Checkpoints (Persisted Locally)
 - `data/crawler_checkpoint.pkl` - Crawler state (resume support)
-- `checkpoints/wiki_mapping_checkpoint/` - PySpark checkpoints (resume support)
-
-## Search
-
-Basic TF-IDF search with two IDF methods:
-
-```bash
-# Run interactive search
-docker-compose run --rm recipe-processor python src/search.py
-
-# Commands:
-# - Type query to search
-# - "change" to toggle IDF method (Robertson vs Classic)
-# - "quit" to exit
-```
-
-## Logs
-
-Each module writes to separate log files in `logs/`:
-- `crawler.log` - Page visits, recipes saved, errors
-- `scraper.log` - HTML processing, extraction warnings
-- `indexer.log` - Spark job progress, index statistics
-
-## Common Issues
-
-1. **Docker build timeout**: First build takes 5-10 minutes (Chrome, Java, dependencies)
-2. **Wikipedia mapping OOM**: Increase `mem_limit` in docker-compose.yml (default: 8GB)
-3. **Mapping interrupted**: Run `./scripts/run_mapping.sh` again to resume from checkpoint
-4. **Windows Spark errors**: Automatically handled by tempfile workaround
-5. **Permission errors (Linux/Mac)**: `chmod 777 data/ logs/ wiki_data/` for volume mounts
-
-## Documentation
-
-- `CLAUDE.md` - Detailed technical documentation for Claude Code
-- `VINF_ASSIGNMENT.md` - Assignment requirements and implementation (Slovak)
-- `crawler.mmd` / `crawler.svg` - Architecture diagrams
+- `checkpoints/wiki_multistream/` - Wikipedia mapping checkpoints (Parquet, JSONL, text)
+  - `wiki_pages.parquet` - All Wikipedia pages with ingredients
+  - `matches.jsonl` - Recipe-Wikipedia matches
+  - `processed_streams.txt` - Stream offsets already processed
+  - **Note:** Checkpoints are stored on your local machine and mounted into Docker containers

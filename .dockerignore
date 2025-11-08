@@ -12,6 +12,7 @@ env/
 # Data and logs (too large, mount as volumes)
 data/
 logs/
+checkpoints/
 *.log
 
 # IDE

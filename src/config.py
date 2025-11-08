@@ -177,21 +177,26 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 RECIPES_SPARK_LOG = os.path.join(LOGS_DIR, "recipes_extraction_spark.log")
 RECIPES_MAPPING_FILE = os.path.join(INDEX_DIR, "mapping.jsonl")
-RECIPES_SPARK_FILES_PER_PARTITION = 200
+RECIPES_SPARK_PARTITIONS = 500
 
 # ============================================================================
 # WIKI MAPPER SETTINGS
 # ============================================================================
 
+WIKI_DATA_DIR = os.path.join(DATA_DIR, "wiki_data")
+WIKI_PAGES_DIR = os.path.join(WIKI_DATA_DIR, "pages")
+WIKI_DUMP_FILE = "enwiki-20251020-pages-articles-multistream.xml.bz2"
+WIKI_DUMP_PATH = os.path.join(WIKI_DATA_DIR, WIKI_DUMP_FILE)
+WIKI_INDEX_FILE = "enwiki-20251020-pages-articles-multistream-index.txt.bz2"
+WIKI_INDEX_PATH = os.path.join(WIKI_DATA_DIR, WIKI_INDEX_FILE)
+WIKI_RECIPES_OUTPUT = os.path.join(INDEX_DIR, "wiki_recipes.jsonl")
 WIKI_SPARK_LOG = os.path.join(LOGS_DIR, "wiki_mapper_spark.log")
-WIKI_DUMP_FILE = "enwiki-20251020-pages-articles.xml.bz2"
-WIKI_DUMP_PATH = os.path.join(DATA_DIR, "wiki_data", WIKI_DUMP_FILE)
-WIKI_OUTPUT_PATH = os.path.join(INDEX_DIR, "wiki_mapping.jsonl")
-WIKI_STREAM_BATCH_SIZE = 500
-WIKI_CHECKPOINT_DIR = os.path.join(CHECKPOINTS_DIR, "wiki_mapping_checkpoint")
-WIKI_CHECKPOINT_FILE = os.path.join(WIKI_CHECKPOINT_DIR, "state.json")
-WIKI_CHECKPOINT_FLUSH_BATCHES = int(os.getenv("WIKI_CHECKPOINT_FLUSH_BATCHES", "1"))
-WIKI_CLEAN_CHECKPOINTS = os.getenv("WIKI_CLEAN_CHECKPOINTS", "false").lower() in {"1", "true", "yes", "on"}
+WIKI_CHECKPOINT_DIR = os.path.join(CHECKPOINTS_DIR, "wiki_multistream")
+
+# Matching parameters
+WIKI_TITLE_WEIGHT = 0.3
+WIKI_INGREDIENT_WEIGHT = 0.7
+WIKI_MIN_MATCH_SCORE = 0.0  # Accept ALL matches (even low scores) to ensure every recipe gets matched
 
 # ============================================================================
 # REGEX PATTERNS

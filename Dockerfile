@@ -1,39 +1,43 @@
 FROM python:3.11-slim-bookworm
 
-# Install Java (required for PySpark)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre-headless \
     wget \
-    bzip2 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Java environment
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
+# Environment variables
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    SCALA_VERSION=2.13.12 \
+    SCALA_HOME=/usr/local/scala \
+    PYSPARK_PYTHON=/usr/local/bin/python \
+    PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
 
-# Set working directory
+ENV PATH="${JAVA_HOME}/bin:${SCALA_HOME}/bin:${PATH}"
+
+# Install Scala 2.13
+RUN wget -q https://downloads.lightbend.com/scala/${SCALA_VERSION}/scala-${SCALA_VERSION}.tgz \
+    && tar -xzf scala-${SCALA_VERSION}.tgz -C /usr/local \
+    && ln -s /usr/local/scala-${SCALA_VERSION} ${SCALA_HOME} \
+    && rm scala-${SCALA_VERSION}.tgz
+
+# Add Scala libraries to Spark classpath
+ENV SPARK_DIST_CLASSPATH="${SCALA_HOME}/lib/*" \
+    PYSPARK_SUBMIT_ARGS="--conf spark.driver.extraClassPath=${SCALA_HOME}/lib/* --conf spark.executor.extraClassPath=${SCALA_HOME}/lib/* pyspark-shell"
+
 WORKDIR /app
 
-# Copy requirements
-COPY requirements.txt .
-
 # Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source and helper scripts
+# Copy application files
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+RUN chmod +x ./scripts/run_spark_pipeline.sh
 
-# Ensure pipeline script is executable
-RUN chmod +x /app/scripts/run_spark_pipeline.sh
+# Create data directories
+RUN mkdir -p data/index data/raw_html data/scraped logs
 
-# Create output directories
-RUN mkdir -p /app/data/index /app/data/raw_html /app/data/scraped /app/logs
-
-# Configure PySpark executables
-ENV PYSPARK_PYTHON=/usr/local/bin/python
-ENV PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
-
-# Default command
 CMD ["./scripts/run_spark_pipeline.sh"]
