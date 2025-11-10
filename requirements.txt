@@ -3,3 +3,4 @@ python-dotenv==1.1.1
 python-ffmpeg==2.0.12
 python-Levenshtein==0.27.3
 selenium==4.36.0
+markitdown==0.1.3

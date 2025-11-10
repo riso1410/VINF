@@ -2,628 +2,526 @@ import bz2
 import json
 import os
 import re
-import xml.etree.ElementTree as ET
-from collections import defaultdict
-from difflib import SequenceMatcher
+import shutil
 
-import pyspark.sql.functions as F
-import pyspark.sql.types as T
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, Row
+from pyspark import StorageLevel
 
 import config
 
 
-def sanitize_ingredient_text(text: str) -> str:
-    if not text:
+def sanitize_ingredient_text(value: str | None) -> str:
+    if not value:
         return ""
-    text = re.sub(r"\[.*?\]", "", text)
-    text = re.sub(r"\(.*?\)", "", text)
-    text = re.sub(r"[^\w\s]", " ", text)
-    text = " ".join(text.lower().split())
-    return text.strip()
+    cleaned = re.sub(r"[^a-z0-9\s]", "", value.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def find_balanced_braces(text: str, start_pos: int) -> int:
-    if start_pos >= len(text) - 1 or not text[start_pos:].startswith('{{'):
-        return -1
+def sanitize_ingredient_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    sanitized: list[str] = []
+    for entry in values:
+        token = sanitize_ingredient_text(entry)
+        if token:
+            sanitized.append(token)
+    return sanitized
 
-    depth = 0
-    i = start_pos
 
-    while i < len(text) - 1:
-        if text[i:i+2] == '{{':
-            depth += 1
-            i += 2
-        elif text[i:i+2] == '}}':
-            depth -= 1
-            i += 2
-            if depth == 0:
-                return i
-        else:
-            i += 1
+def has_food_infobox(wikitext: str) -> bool:
+    if not wikitext:
+        return False
 
-    return -1
+    food_infobox_pattern = r"\{\{[Ii]nfobox\s+(?:[Ff]ood|[Dd]ish|[Bb]everage|[Dd]rink|[Cc]heese|[Bb]read|[Cc]ake|[Dd]essert|[Ss]oup|[Ss]alad|[Ss]auce|[Cc]ondiment|[Ii]ngredient|[Ss]pice|[Mm]eal|[Cc]uisine|[Pp]repared\s+[Ff]ood)"
+    return bool(re.search(food_infobox_pattern, wikitext))
 
 
 def extract_ingredients_from_wikitext(wikitext: str) -> list[str]:
+    if not wikitext:
+        return []
     ingredients = set()
-    infobox_pattern = r'\{\{[Ii]nfobox\s+'
-    infobox_starts = [m.start() for m in re.finditer(infobox_pattern, wikitext)]
 
-    for start_pos in infobox_starts:
-        end_pos = find_balanced_braces(wikitext, start_pos)
-        if end_pos == -1:
-            continue
+    infobox_pattern = r"\{\{[Ii]nfobox\s+(?:[Ff]ood|[Dd]ish|[Bb]everage|[Dd]rink|[Cc]heese|[Bb]read|[Cc]ake|[Dd]essert|[Ss]oup|[Ss]alad|[Ss]auce|[Cc]ondiment|[Ii]ngredient|[Ss]pice|[Mm]eal|[Cc]uisine|[Pp]repared\s+[Ff]ood).*?\}\}"
 
-        infobox = wikitext[start_pos:end_pos]
-
-        if not re.search(r'\|\s*\w*ingredient[s]?\s*=', infobox, re.IGNORECASE):
-            continue
-
-        field_pattern = r'\|\s*\w*ingredient[s]?\s*=\s*(.+?)(?=\s*\||$)'
-        fields = re.findall(field_pattern, infobox, re.IGNORECASE | re.DOTALL)
-
+    for infobox in re.findall(infobox_pattern, wikitext, re.DOTALL):
+        fields = re.findall(
+            r"\|\s*(?:main_)?ingredient[s]?\s*=\s*([^\|]+)", infobox, re.IGNORECASE
+        )
         for field in fields:
-            field = field.strip()
-
-            while '{{' in field:
-                template_start = field.find('{{')
-                template_end = find_balanced_braces(field, template_start)
-
-                if template_end > 0:
-                    template = field[template_start:template_end]
-                    template_content = re.sub(r'\{\{[^|]+\|', '', template, count=1)
-                    template_content = template_content.rstrip('}')
-                    field = field[:template_start] + template_content + field[template_end:]
-                else:
-                    field = re.sub(r'\{\{[^}]*$', '', field)
-                    break
-
-            text = re.sub(r'\[\[(?:[^\]]*\|)?([^\]]+)\]\]', r'\1', field)
-
-            text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
-            text = re.sub(r'<[^>]+>', '', text)
-
-            text = re.sub(r'\{\{[^}]*\}\}', '', text)
-
-            text = re.sub(r'^\s*\*\s*', '', text, flags=re.MULTILINE)
-
-            for part in re.split(r'[,;\n]', text):
+            text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", field)
+            text = re.sub(r"<[^>]+>", "", text)
+            text = re.sub(r"\{\{[^}]+\}\}", "", text)
+            for part in re.split(r"[,;\n]", text):
                 token = sanitize_ingredient_text(part)
                 if len(token) > 2:
                     ingredients.add(token)
-
-    return list(ingredients)
-
-
-def sanitize_filename(title: str) -> str:
-    return re.sub(r'[<>:"/\\|?*]', "_", title)
-
-
-def compute_title_similarity(title1: str, title2: str) -> float:
-    if not title1 or not title2:
-        return 0.0
-    return SequenceMatcher(None, title1.lower(), title2.lower()).ratio()
+    for item in re.findall(r"[\*#]\s*([^\n]+)", wikitext)[:20]:
+        text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", item)
+        text = sanitize_ingredient_text(re.sub(r"<[^>]+>", "", text))
+        if 2 < len(text) < 50:
+            ingredients.add(text)
+    return list(ingredients)[:50]
 
 
-def compute_jaccard_similarity(set1: list, set2: list) -> float:
-    if not set1 or not set2:
-        return 0.0
-    s1 = set(set1)
-    s2 = set(set2)
-    intersection = len(s1 & s2)
-    union = len(s1 | s2)
-    return intersection / union if union > 0 else 0.0
-
-
-def parse_multistream_index(index_path: str) -> dict[int, list[tuple[int, str]]]:
-    stream_map = defaultdict(list)
-
-    with bz2.open(index_path, "rt", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split(":", 2)
-            if len(parts) == 3:
-                offset = int(parts[0])
-                article_id = int(parts[1])
-                title = parts[2]
-                stream_map[offset].append((article_id, title))
-
-    return dict(stream_map)
-
-
-def read_stream_at_offset(dump_path: str, offset: int, next_offset: int = None) -> str:
-    with open(dump_path, "rb") as f:
-        f.seek(offset)
-
-        if next_offset:
-            compressed_data = f.read(next_offset - offset)
-        else:
-            compressed_data = bytearray()
-            chunk = f.read(1)
-            if not chunk:
-                return ""
-            compressed_data.extend(chunk)
-
-            while True:
-                chunk = f.read(8192)
-                if not chunk:
-                    break
-
-                bz_marker = b'BZh'
-                marker_pos = chunk.find(bz_marker)
-                if marker_pos > 0:
-                    compressed_data.extend(chunk[:marker_pos])
-                    break
-                compressed_data.extend(chunk)
-
-    try:
-        decompressed = bz2.decompress(bytes(compressed_data))
-        return decompressed.decode("utf-8", errors="ignore")
-    except Exception:
+def extract_description_from_wikitext(wikitext: str) -> str:
+    """Extract description from Wikipedia wikitext - only the lead section."""
+    if not wikitext:
         return ""
 
+    # Extract only the lead section (before first ==)
+    lead_match = re.search(r"^(.*?)(?:^==|\Z)", wikitext, re.MULTILINE | re.DOTALL)
+    if not lead_match:
+        return ""
+    
+    lead_text = lead_match.group(1).strip()
+    if not lead_text:
+        return ""
+    
+    # Clean wikitext markup
+    lead_text = re.sub(r"\{\{[^}]+\}\}", "", lead_text)
+    lead_text = re.sub(r"<ref[^>]*>.*?</ref>", "", lead_text, flags=re.DOTALL)
+    lead_text = re.sub(r"<!--.*?-->", "", lead_text, flags=re.DOTALL)
+    lead_text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", lead_text)
+    lead_text = re.sub(r"\[https?://[^\]]+\s+([^\]]+)\]", r"\1", lead_text)
+    lead_text = re.sub(r"[\[\]']", "", lead_text)
+    lead_text = re.sub(r"<[^>]+>", "", lead_text)
+    lead_text = re.sub(r"\s+", " ", lead_text).strip()
+    
+    # Truncate to reasonable length
+    if len(lead_text) > 500:
+        sentences = re.split(r"[.!?]+\s+", lead_text[:600])
+        result = []
+        length = 0
+        for sentence in sentences:
+            if length + len(sentence) <= 500:
+                result.append(sentence)
+                length += len(sentence)
+            else:
+                break
+        if result:
+            lead_text = ". ".join(result) + "."
+        else:
+            lead_text = lead_text[:500] + "..."
 
-def parse_xml_pages(xml_text: str) -> list[dict]:
-    pages = []
-
-    if not xml_text.strip().startswith("<mediawiki"):
-        xml_text = f"<mediawiki>{xml_text}</mediawiki>"
-
-    try:
-        root = ET.fromstring(xml_text)
-
-        for page in root.findall(".//page"):
-            title_elem = page.find("title")
-            ns_elem = page.find("ns")
-            text_elem = page.find(".//revision/text")
-
-            if title_elem is not None and text_elem is not None:
-                title = title_elem.text or ""
-                ns = ns_elem.text or "0"
-                wikitext = text_elem.text or ""
-
-                pages.append({
-                    "title": title,
-                    "ns": ns,
-                    "wikitext": wikitext
-                })
-    except ET.ParseError:
-        page_pattern = r"<page>.*?</page>"
-        for page_match in re.finditer(page_pattern, xml_text, re.DOTALL):
-            page_xml = page_match.group(0)
-            title_match = re.search(r"<title>(.*?)</title>", page_xml)
-            ns_match = re.search(r"<ns>(.*?)</ns>", page_xml)
-            text_match = re.search(r"<text[^>]*>(.*?)</text>", page_xml, re.DOTALL)
-
-            if title_match and text_match:
-                pages.append({
-                    "title": title_match.group(1),
-                    "ns": ns_match.group(1) if ns_match else "0",
-                    "wikitext": text_match.group(1)
-                })
-
-    return pages
+    return lead_text
 
 
-def save_wiki_page_xml(title: str, wikitext: str, output_dir: str):
-    filename = f"{sanitize_filename(title)}.xml"
-    filepath = os.path.join(output_dir, filename)
+def normalize_title(title: str) -> str:
+    if not title:
+        return ""
+    normalized = title.lower().strip()
+    normalized = re.sub(r"\s+", "_", normalized)
+    normalized = re.sub(r"[^a-z0-9_]", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized)
+    normalized = normalized.strip("_")
+    return normalized
 
-    # Escape XML special characters
-    wikitext_escaped = (
-        wikitext.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
+
+def calculate_similarity(s1: str, s2: str) -> float:
+    if not s1 or not s2:
+        return 0.0
+    if s1 == s2:
+        return 1.0
+    
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, s1, s2).ratio()
+
+
+def build_wiki_url(title: str | None) -> str:
+    if not title:
+        return ""
+    sanitized = re.sub(r"\s+", "_", title.strip())
+    return f"https://en.wikipedia.org/wiki/{sanitized}"
+
+
+def extract_between_tags(page: str, tag: str) -> str:
+    match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", page, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    content = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", match.group(1), flags=re.DOTALL)
+    return content.strip()
+
+
+def process_recipe(recipe: dict) -> dict:
+    import hashlib
+
+    recipe["doc_id"] = hashlib.sha256(
+        (recipe.get("url") or recipe.get("title", "")).encode()
+    ).hexdigest()
+
+    for key in [
+        "url",
+        "title",
+        "description",
+        "method",
+        "chef",
+        "difficulty",
+        "prep_time",
+        "servings",
+    ]:
+        recipe.setdefault(key, "")
+
+    recipe["ingredients"] = sanitize_ingredient_list(recipe.get("ingredients"))
+    return recipe
+
+
+def extract_wiki_page(dump_path: str, offset_matches: tuple) -> list[dict]:
+    offset, matches = offset_matches
+    page_xml = read_page_at_offset(dump_path, offset)
+    if not page_xml:
+        return []
+
+    namespace = extract_between_tags(page_xml, "ns")
+    if namespace != "0":
+        return []
+
+    if "<redirect" in page_xml:
+        return []
+
+    title = extract_between_tags(page_xml, "title")
+    text = extract_between_tags(page_xml, "text")
+    if not text:
+        return []
+
+    if not has_food_infobox(text):
+        return []
+
+    wiki_data = {
+        "wiki_title": title,
+        "wiki_url": build_wiki_url(title),
+        "wiki_ingredients": sanitize_ingredient_list(
+            extract_ingredients_from_wikitext(text)
+        ),
+        "wiki_description": extract_description_from_wikitext(text),
+    }
+
+    return [
+        {
+            "doc_id": m["doc_id"],
+            **wiki_data,
+        }
+        for m in matches
+    ]
+
+
+def merge_recipe_wiki(doc_id_recipe_wiki: tuple) -> dict:
+    _, (recipe, wiki) = doc_id_recipe_wiki
+
+    recipe.update(
+        {
+            "wiki_title": wiki.get("wiki_title", "") if wiki else "",
+            "wiki_url": wiki.get("wiki_url", "") if wiki else "",
+            "wiki_ingredients": wiki.get("wiki_ingredients", []) if wiki else [],
+            "wiki_description": wiki.get("wiki_description", "") if wiki else "",
+        }
+    )
+    return recipe
+
+
+def remove_internal_fields(record: dict) -> dict:
+    return {k: v for k, v in record.items() if k not in ("doc_id", "offset", "similarity")}
+
+
+def create_spark_session() -> SparkSession:
+    return (
+        SparkSession.builder.appName("WikipediaRecipeMapper")
+        .master("local[*]")
+        .config("spark.driver.memory", "3g")
+        .config("spark.executor.memory", "3g")
+        .config("spark.memory.fraction", "0.8")  
+        .config("spark.memory.storageFraction", "0.5")  
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.kryoserializer.buffer.max", "512m")
+        .getOrCreate()
     )
 
-    page_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<page>
-  <title>{title}</title>
-  <text>{wikitext_escaped}</text>
-</page>
-"""
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(page_xml)
+
+def parse_index_line(line: str) -> tuple[int, int, str] | None:
+    if not line or not line.strip():
+        return None
+
+    parts = line.strip().split(":", 2)
+    offset = int(parts[0])
+    page_id = int(parts[1])
+    title = parts[2]
+    return (offset, page_id, title)
 
 
-def process_stream_with_recipes(args):
-    offset, next_offset, dump_path, recipes_broadcast, wiki_pages_dir = args
+def read_page_at_offset(dump_path: str, offset: int) -> str | None:
+    with open(dump_path, "rb") as f:
+        f.seek(offset)
+        decompressor = bz2.BZ2Decompressor()
 
-    xml_text = read_stream_at_offset(dump_path, offset, next_offset)
-    if not xml_text:
-        return (offset, [], [])
+        buffer = []
+        found_page = False
+        page_depth = 0
 
-    pages = parse_xml_pages(xml_text)
+        # Read chunks
+        while True:
+            chunk = f.read(8192)  # 8KB chunks
+            if not chunk:
+                break
 
-    recipes = recipes_broadcast.value
+            try:
+                text = decompressor.decompress(chunk).decode(
+                    "utf-8", errors="ignore"
+                )
+            except EOFError:
+                break
 
-    pages_with_ingredients = []
-    matches = []
+            buffer.append(text)
 
-    for page in pages:
-        if page["ns"] != "0":
-            continue
+            for line in text.split("\n"):
+                if "<page>" in line:
+                    found_page = True
+                    page_depth += 1
+                if "</page>" in line:
+                    page_depth -= 1
+                    if found_page and page_depth == 0:
+                        full_text = "".join(buffer)
+                        match = re.search(r"<page>.*?</page>", full_text, re.DOTALL)
+                        if match:
+                            return match.group(0)
+                        return None
 
-        wiki_ingredients = extract_ingredients_from_wikitext(page["wikitext"])
-        if not wiki_ingredients:
-            continue
+    return None
 
-        wiki_title = page["title"]
-        wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title.replace(' ', '_')}"
+class WikipediaRecipeMapper:
+    def __init__(
+        self,
+        spark: SparkSession,
+        wiki_dump_path: str,
+        wiki_index_path: str,
+        output_path: str,
+        recipes_path: str | None = None,
+    ) -> None:
+        self.sc = spark.sparkContext
+        self.wiki_dump_path = wiki_dump_path
+        self.wiki_index_path = wiki_index_path
+        self.output_path = output_path
+        self.recipes_path = recipes_path or config.RECIPES_FILE
+        self.logger = config.setup_logging(config.WIKI_SPARK_LOG)
 
-        pages_with_ingredients.append({
-            "title": wiki_title,
-            "ingredients": wiki_ingredients,
-            "url": wiki_url
-        })
+    def run(self) -> None:
+        self.prepare_environment()
 
-        wiki_ingredients_set = set(wiki_ingredients)
-        page_saved = False
+        recipes_data = self.load_recipes()
+        matches_data = self.match_titles(recipes_data)
+        wiki_data_data = self.extract_wiki_data(matches_data)
+        final_data = self.join_recipes_with_wiki_data(recipes_data, wiki_data_data)
+        total = self.write_output(final_data)
 
-        for recipe in recipes:
-            recipe_title = recipe["title"]
-            recipe_ingredients = recipe["ingredients"]
+        self.logger.info(
+            "✓ Pipeline complete: %s recipes enriched with Wikipedia data", f"{total:,}"
+        )
 
-            recipe_ingredients_set = set(recipe_ingredients)
-            if not wiki_ingredients_set & recipe_ingredients_set:
-                continue
+        recipes_data.unpersist()
+        matches_data.unpersist()
+        wiki_data_data.unpersist()
 
-            title_sim = compute_title_similarity(recipe_title, wiki_title)
-            ingredient_sim = compute_jaccard_similarity(recipe_ingredients, wiki_ingredients)
-
-            match_score = (title_sim * 0.3) + (ingredient_sim * 0.7)
-
-            if match_score > 0:
-                if not page_saved:
-                    try:
-                        save_wiki_page_xml(wiki_title, page["wikitext"], wiki_pages_dir)
-                        page_saved = True
-                    except Exception:
-                        pass
-
-                matches.append({
-                    "recipe_title": recipe_title,
-                    "wiki_title": wiki_title,
-                    "wiki_url": wiki_url,
-                    "wiki_ingredients": wiki_ingredients,
-                    "match_score": match_score,
-                    "ingredient_similarity": ingredient_sim
-                })
-
-    return (offset, pages_with_ingredients, matches)
-
-
-class WikiMapper:
-    def __init__(self):
-        self.recipes_file = config.RECIPES_FILE
-        self.wiki_dump_path = config.WIKI_DUMP_PATH
-        self.wiki_index_path = config.WIKI_INDEX_PATH
-        self.wiki_pages_dir = config.WIKI_PAGES_DIR
-        self.output_file = config.WIKI_RECIPES_OUTPUT
-        self.checkpoint_dir = config.WIKI_CHECKPOINT_DIR
-
-        self.pages_checkpoint = os.path.join(self.checkpoint_dir, "wiki_pages.parquet")
-        self.matches_checkpoint = os.path.join(self.checkpoint_dir, "matches.jsonl")
-        self.processed_streams_file = os.path.join(self.checkpoint_dir, "processed_streams.txt")
-
-        os.makedirs(self.wiki_pages_dir, exist_ok=True)
-        os.makedirs(config.INDEX_DIR, exist_ok=True)
+    def prepare_environment(self) -> None:
         os.makedirs(config.LOGS_DIR, exist_ok=True)
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        os.makedirs(config.DATA_DIR, exist_ok=True)
 
-        self.logger = config.setup_logging(config.WIKI_SPARK_LOG, config.LOG_LEVEL)
+    def load_recipes(self):
+        self.logger.info("STEP 1/5: Loading Recipes")
 
-        self.spark = (
-            SparkSession.builder
-            .appName("WikiMapper")
-            .master("local[*]")
-            .config("spark.hadoop.io.compression.codecs",
-                    "org.apache.hadoop.io.compress.BZip2Codec")
-            .getOrCreate()
+        rdd = (
+            self.sc.textFile(self.recipes_path)
+            .map(json.loads)
+            .map(process_recipe)
+            .persist(StorageLevel.MEMORY_ONLY)
         )
 
-        self.sc = self.spark.sparkContext
-        self.logger.info("WikiMapper initialized with streaming architecture")
+        self.logger.info("  Loaded %s recipes\n", f"{rdd.count():,}")
+        return rdd
 
-    def run(self):
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" WIKIPEDIA-RECIPE MAPPING PIPELINE (STREAMING)")
-        self.logger.info("=" * 70)
+    def match_titles(self, recipes_data):
+        self.logger.info("STEP 2/5: Matching Recipe Titles to Wikipedia")
 
-        if os.path.exists(self.output_file):
-            self.logger.info("")
-            self.logger.info("=" * 70)
-            self.logger.info(" OUTPUT ALREADY EXISTS")
-            self.logger.info("=" * 70)
-            self.logger.info(f"Found existing output: {self.output_file}")
-            self.logger.info("Delete the file to reprocess or use checkpoint to resume")
-            self.logger.info("=" * 70)
-            return
+        wiki_index_data = (
+            self.sc.textFile(self.wiki_index_path)
+            .map(parse_index_line)
+            .filter(lambda x: x is not None)
+        )
 
-        if not os.path.exists(self.wiki_dump_path):
-            self.logger.error(f"Wikipedia dump not found: {self.wiki_dump_path}")
-            return
-
-        if not os.path.exists(self.wiki_index_path):
-            self.logger.error(f"Multistream index not found: {self.wiki_index_path}")
-            return
-
-        if not os.path.exists(self.recipes_file):
-            self.logger.error(f"Recipes file not found: {self.recipes_file}")
-            return
-
-        self.logger.info("Loading recipes...")
-        with open(self.recipes_file, 'r', encoding='utf-8') as f:
-            recipes = [json.loads(line) for line in f]
-        self.logger.info(f"Loaded {len(recipes):,} recipes")
-
-        recipes_broadcast = self.sc.broadcast(recipes)
-
-        processed_streams = set()
-        if os.path.exists(self.processed_streams_file):
-            self.logger.info("")
-            self.logger.info("=" * 70)
-            self.logger.info(" RESUMING FROM CHECKPOINT")
-            self.logger.info("=" * 70)
-            with open(self.processed_streams_file, 'r') as f:
-                processed_streams = set(int(line.strip()) for line in f)
-            self.logger.info(f"Found {len(processed_streams):,} already processed streams")
-
-            if os.path.exists(self.pages_checkpoint) and os.path.exists(self.matches_checkpoint):
-                self.logger.info("Found existing checkpoints - loading...")
-
-                with open(self.matches_checkpoint, 'r', encoding='utf-8') as f:
-                    existing_matches = [json.loads(line) for line in f]
-
-                self.logger.info(f"Loaded {len(existing_matches):,} existing matches")
-                self.logger.info("Will continue processing remaining streams...")
-            else:
-                existing_matches = []
+        total_wiki_pages = wiki_index_data.count()
+        self.logger.info("  Loaded %s Wikipedia article pages", f"{total_wiki_pages:,}")
+        
+        recipes_with_normalized = recipes_data.map(
+            lambda r: (normalize_title(r.get("title", "")), r)
+        ).filter(lambda x: x[0])  
+        
+        wiki_with_normalized = wiki_index_data.map(
+            lambda w: (normalize_title(w[2]), {"offset": w[0], "page_id": w[1], "wiki_title": w[2], "normalized": normalize_title(w[2])})
+        ).filter(lambda x: x[0])  # Filter out empty titles
+        
+        # First try exact match with INNER JOIN
+        exact_joined = recipes_with_normalized.join(wiki_with_normalized)
+        
+        exact_matches = exact_joined.map(
+            lambda x: {
+                "doc_id": x[1][0]["doc_id"],
+                "wiki_title": x[1][1]["wiki_title"],
+                "offset": x[1][1]["offset"],
+                "similarity": 1.0,
+            }
+        )
+        
+        # Get recipes that didn't match exactly
+        matched_doc_ids = exact_matches.map(lambda m: m["doc_id"]).collect()
+        matched_doc_ids_set = set(matched_doc_ids)
+        
+        unmatched_recipes = recipes_data.filter(
+            lambda r: r["doc_id"] not in matched_doc_ids_set
+        )
+        
+        # Broadcast wiki index for fuzzy matching (only if we have unmatched recipes)
+        unmatched_count = unmatched_recipes.count()
+        self.logger.info(f"  Exact matches: {len(matched_doc_ids_set):,}")
+        
+        if unmatched_count > 0:
+            self.logger.info(f"  Performing fuzzy matching for {unmatched_count:,} unmatched recipes...")
+            
+            # Collect wiki titles for fuzzy matching (this is expensive but necessary)
+            wiki_titles = wiki_with_normalized.collect()
+            wiki_titles_broadcast = self.sc.broadcast(wiki_titles)
+            
+            def find_best_fuzzy_match(recipe):
+                recipe_title = normalize_title(recipe.get("title", ""))
+                if not recipe_title:
+                    return None
+                
+                best_match = None
+                best_similarity = 0.5  # Minimum 50% similarity threshold
+                
+                for norm_wiki_title, wiki_data in wiki_titles_broadcast.value:
+                    similarity = calculate_similarity(recipe_title, norm_wiki_title)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = {
+                            "doc_id": recipe["doc_id"],
+                            "wiki_title": wiki_data["wiki_title"],
+                            "offset": wiki_data["offset"],
+                            "similarity": similarity,
+                        }
+                
+                return best_match
+            
+            fuzzy_matches = (
+                unmatched_recipes
+                .map(find_best_fuzzy_match)
+                .filter(lambda x: x is not None)
+            )
+            
+            # Combine exact and fuzzy matches
+            matches_data = exact_matches.union(fuzzy_matches).persist(StorageLevel.MEMORY_ONLY)
+            
+            fuzzy_count = fuzzy_matches.count()
+            self.logger.info(f"  Fuzzy matches (>50% similarity): {fuzzy_count:,}")
         else:
-            existing_matches = []
+            matches_data = exact_matches.persist(StorageLevel.MEMORY_ONLY)
 
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" PROCESSING WIKIPEDIA STREAMS")
-        self.logger.info("=" * 70)
-        self.logger.info(f"Reading index from: {self.wiki_index_path}")
+        matched_count = matches_data.count()
+        total_recipes = recipes_data.count()
 
-        stream_map = parse_multistream_index(self.wiki_index_path)
-        offsets = sorted(stream_map.keys())
-        self.logger.info(f"Found {len(offsets):,} streams")
-
-        offset_ranges = []
-        for i, offset in enumerate(offsets):
-            if offset not in processed_streams:
-                next_offset = offsets[i + 1] if i + 1 < len(offsets) else None
-                offset_ranges.append((offset, next_offset, self.wiki_dump_path, recipes_broadcast, self.wiki_pages_dir))
-
-        if not offset_ranges:
-            self.logger.info("All streams already processed!")
-            self.logger.info("Creating final output from checkpoint...")
-            self._create_final_output(existing_matches, recipes)
-            return
-
-        self.logger.info(f"Streams to process: {len(offset_ranges):,} (skipping {len(processed_streams):,} already done)")
-
-        num_partitions = min(500, len(offset_ranges))
-        self.logger.info(f"Using {num_partitions} partitions")
-        self.logger.info("Processing streams and matching to recipes...")
-        self.logger.info("This will take 30-60 minutes...")
-        self.logger.info("Progress will be checkpointed incrementally")
-
-        streams_rdd = self.sc.parallelize(offset_ranges, numSlices=num_partitions)
-        results_rdd = streams_rdd.map(process_stream_with_recipes)
-
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" COLLECTING RESULTS")
-        self.logger.info("=" * 70)
-
-        all_results = results_rdd.collect()
-
-        new_pages = []
-        new_matches = []
-        new_processed_offsets = []
-
-        for offset, pages, matches in all_results:
-            new_pages.extend(pages)
-            new_matches.extend(matches)
-            new_processed_offsets.append(offset)
-
-        self.logger.info(f"Collected {len(new_pages):,} Wikipedia pages with ingredients")
-        self.logger.info(f"Collected {len(new_matches):,} new matches")
-
-        if new_pages:
-            self.logger.info("")
-            self.logger.info("=" * 70)
-            self.logger.info(" CHECKPOINTING WIKIPEDIA PAGES (PARQUET)")
-            self.logger.info("=" * 70)
-            self.logger.info(f"Checkpoint path: {self.pages_checkpoint}")
-            self.logger.info(f"New pages to save: {len(new_pages):,}")
-
-            schema = T.StructType([
-                T.StructField("title", T.StringType(), False),
-                T.StructField("ingredients", T.ArrayType(T.StringType()), False),
-                T.StructField("url", T.StringType(), False),
-            ])
-
-            new_pages_df = self.spark.createDataFrame(new_pages, schema)
-
-            if os.path.exists(self.pages_checkpoint):
-                self.logger.info("Appending to existing checkpoint...")
-                existing_pages_df = self.spark.read.parquet(self.pages_checkpoint)
-                existing_count = existing_pages_df.count()
-                self.logger.info(f"Existing pages: {existing_count:,}")
-
-                combined_pages_df = existing_pages_df.union(new_pages_df)
-                combined_pages_df.write.mode("overwrite").parquet(self.pages_checkpoint)
-
-                total_count = combined_pages_df.count()
-                self.logger.info(f"Total pages after merge: {total_count:,}")
-            else:
-                self.logger.info("Creating new checkpoint (first write)...")
-                new_pages_df.write.mode("overwrite").parquet(self.pages_checkpoint)
-                self.logger.info(f"Saved {len(new_pages):,} pages")
-
-            checkpoint_size = 0
-            for root, dirs, files in os.walk(self.pages_checkpoint):
-                for file in files:
-                    checkpoint_size += os.path.getsize(os.path.join(root, file))
-
-            self.logger.info(f"Checkpoint size: {checkpoint_size / (1024*1024):.2f} MB")
-            self.logger.info("✅ Pages checkpoint saved successfully!")
-            self.logger.info("=" * 70)
-
-        if new_matches:
-            self.logger.info("")
-            self.logger.info("=" * 70)
-            self.logger.info(" CHECKPOINTING MATCHES (JSONL)")
-            self.logger.info("=" * 70)
-            self.logger.info(f"Checkpoint path: {self.matches_checkpoint}")
-            self.logger.info(f"New matches to save: {len(new_matches):,}")
-
-            mode = 'a' if os.path.exists(self.matches_checkpoint) else 'w'
-            if mode == 'a':
-                with open(self.matches_checkpoint, 'r', encoding='utf-8') as f:
-                    existing_count = sum(1 for _ in f)
-                self.logger.info(f"Existing matches: {existing_count:,}")
-                self.logger.info("Appending new matches...")
-            else:
-                self.logger.info("Creating new checkpoint (first write)...")
-
-            with open(self.matches_checkpoint, mode, encoding='utf-8') as f:
-                for match in new_matches:
-                    json.dump(match, f, ensure_ascii=False)
-                    f.write('\n')
-
-            file_size = os.path.getsize(self.matches_checkpoint)
-            self.logger.info(f"Checkpoint size: {file_size / 1024:.2f} KB")
-
-            with open(self.matches_checkpoint, 'r', encoding='utf-8') as f:
-                total_count = sum(1 for _ in f)
-            self.logger.info(f"Total matches in checkpoint: {total_count:,}")
-            self.logger.info("✅ Matches checkpoint saved successfully!")
-            self.logger.info("=" * 70)
-
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" CHECKPOINTING PROCESSED STREAMS")
-        self.logger.info("=" * 70)
-        self.logger.info(f"Checkpoint path: {self.processed_streams_file}")
-        self.logger.info(f"New streams processed: {len(new_processed_offsets):,}")
-
-        if os.path.exists(self.processed_streams_file):
-            with open(self.processed_streams_file, 'r') as f:
-                existing_count = sum(1 for _ in f)
-            self.logger.info(f"Previously processed: {existing_count:,}")
-
-        with open(self.processed_streams_file, 'a') as f:
-            for offset in new_processed_offsets:
-                f.write(f"{offset}\n")
-
-        with open(self.processed_streams_file, 'r') as f:
-            total_processed = sum(1 for _ in f)
-
-        self.logger.info(f"Total streams processed: {total_processed:,} / {len(offsets):,}")
-        progress_pct = (total_processed / len(offsets)) * 100 if offsets else 0
-        self.logger.info(f"Overall progress: {progress_pct:.1f}%")
-
-        if total_processed > len(processed_streams):
-            streams_per_run = total_processed - len(processed_streams)
-            remaining_streams = len(offsets) - total_processed
-            self.logger.info(f"Remaining streams: {remaining_streams:,}")
-            self.logger.info(f"(Processing ~{streams_per_run:,} streams per run)")
-
-        self.logger.info("✅ Streams checkpoint saved successfully!")
-        self.logger.info("=" * 70)
-
-        all_matches = existing_matches + new_matches
-        self.logger.info("")
-        self.logger.info(f"📊 Total matches accumulated: {len(all_matches):,}")
-        self.logger.info("")
-
-        self._create_final_output(all_matches, recipes)
-
-    def _create_final_output(self, all_matches, recipes):
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" COMPUTING BEST MATCHES")
-        self.logger.info("=" * 70)
-
-        schema = T.StructType([
-            T.StructField("recipe_title", T.StringType(), False),
-            T.StructField("wiki_title", T.StringType(), False),
-            T.StructField("wiki_url", T.StringType(), False),
-            T.StructField("wiki_ingredients", T.ArrayType(T.StringType()), False),
-            T.StructField("match_score", T.FloatType(), False),
-            T.StructField("ingredient_similarity", T.FloatType(), False),
-        ])
-
-        matches_df = self.spark.createDataFrame(all_matches, schema)
-
-        total_matches = matches_df.count()
-        self.logger.info(f"Total recipe-Wikipedia match candidates: {total_matches:,}")
-
-        from pyspark.sql.window import Window
-        window = Window.partitionBy("recipe_title").orderBy(F.desc("match_score"))
-        best_matches = matches_df.withColumn(
-            "rank", F.row_number().over(window)
-        ).filter(F.col("rank") == 1).drop("rank")
-
-        match_count = best_matches.count()
-        self.logger.info(f"Best matches (one per recipe): {match_count:,}")
-
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" CREATING ENRICHED RECIPES")
-        self.logger.info("=" * 70)
-
-        recipes_df = self.spark.read.json(self.recipes_file)
-
-        enriched_df = recipes_df.join(
-            best_matches.select(
-                F.col("recipe_title").alias("title"),
-                "wiki_title",
-                "wiki_url",
-                "wiki_ingredients"
-            ),
-            on="title",
-            how="left"
+        self.logger.info(
+            "Total matched: %s / %s recipes (%.1f%%)\n",
+            f"{matched_count:,}",
+            f"{total_recipes:,}",
+            100.0 * matched_count / total_recipes if total_recipes > 0 else 0,
         )
 
-        self.logger.info(f"Writing enriched recipes to: {self.output_file}")
+        return matches_data
 
-        temp_output_dir = self.output_file + "_temp"
-        enriched_df.coalesce(1).write.mode("overwrite").json(temp_output_dir)
+    def extract_wiki_data(self, matches_data):
+        self.logger.info("STEP 3/5: Extracting Wikipedia Data")
 
-        import glob
-        import shutil
-        part_files = glob.glob(os.path.join(temp_output_dir, "part-*.json"))
+        dump_path = self.wiki_dump_path
+
+        from functools import partial
+        extract_func = partial(extract_wiki_page, dump_path)
+
+        wiki_data_data = (
+            matches_data.map(lambda m: (m["offset"], m))
+            .groupByKey()
+            .flatMap(extract_func)
+            .persist(StorageLevel.MEMORY_ONLY)
+        )
+
+        extracted_count = wiki_data_data.count()
+        matched_pages = matches_data.count()
+        self.logger.info(
+            "Extracted data from %s pages (out of %s matched, %.1f%% had food infoboxes)\n",
+            f"{extracted_count:,}",
+            f"{matched_pages:,}",
+            100.0 * extracted_count / matched_pages if matched_pages > 0 else 0,
+        )
+
+        return wiki_data_data
+
+    def join_recipes_with_wiki_data(self, recipes_data, wiki_data_data):
+        self.logger.info("STEP 4/5: Joining Recipes with Wikipedia Data")
+
+        joined_data = (
+            recipes_data.map(lambda r: (r["doc_id"], r))
+            .leftOuterJoin(wiki_data_data.map(lambda w: (w["doc_id"], w)))
+            .map(merge_recipe_wiki)
+        )
+
+        matched = joined_data.filter(lambda r: r["wiki_url"]).count()
+        total = joined_data.count()
+
+        self.logger.info(
+            "Joined %s / %s recipes (%.1f%%)\n",
+            f"{matched:,}",
+            f"{total:,}",
+            100.0 * matched / total if total > 0 else 0,
+        )
+
+        return joined_data
+
+    def write_output(self, final_data) -> int:
+        self.logger.info("STEP 5/5: Writing Output")
+
+        os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
+
+        output_data = final_data.map(remove_internal_fields)
+        count = output_data.count()
+
+        output_df = output_data.map(lambda x: Row(**x)).toDF()
+
+        temp_path = self.output_path + ".tmp"
+        output_df.coalesce(1).write.mode("overwrite").json(temp_path)
+
+        part_files = [
+            f
+            for f in os.listdir(temp_path)
+            if f.startswith("part-") and f.endswith(".json")
+        ]
+        temp_path = self.output_path + ".tmp"
+        output_df.coalesce(1).write.mode("overwrite").json(temp_path)
+
+        part_files = [f for f in os.listdir(temp_path) if f.startswith('part-') and f.endswith('.json')]
         if part_files:
-            shutil.move(part_files[0], self.output_file)
-            shutil.rmtree(temp_output_dir)
+            shutil.move(os.path.join(temp_path, part_files[0]), self.output_path)
+            shutil.rmtree(temp_path, ignore_errors=True)
 
-        self.logger.info("")
-        self.logger.info("=" * 70)
-        self.logger.info(" PIPELINE COMPLETED SUCCESSFULLY!")
-        self.logger.info("=" * 70)
-        self.logger.info(f"Enriched recipes: {self.output_file}")
-        self.logger.info(f"Wiki pages saved: {self.wiki_pages_dir}")
-        self.logger.info(f"Total recipes: {len(recipes):,}")
-        self.logger.info(f"Matched recipes: {match_count:,}")
-        self.logger.info(f"Match rate: {(match_count/len(recipes)*100):.1f}%")
-        self.logger.info("=" * 70)
-
-        self.spark.stop()
+        self.logger.info("Wrote %s records to %s\n", f"{count:,}", self.output_path)
+        return count
 
 
-def main():
-    mapper = WikiMapper()
+def main() -> None:
+    spark = create_spark_session()
+    mapper = WikipediaRecipeMapper(
+        spark,
+        wiki_dump_path=config.WIKI_DUMP_PATH,
+        wiki_index_path=config.WIKI_INDEX_PATH,
+        output_path=config.WIKI_RECIPES_OUTPUT,
+        recipes_path=config.RECIPES_FILE,
+    )
     mapper.run()
+    spark.stop()
 
 
 if __name__ == "__main__":

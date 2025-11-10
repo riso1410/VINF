@@ -177,7 +177,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 RECIPES_SPARK_LOG = os.path.join(LOGS_DIR, "recipes_extraction_spark.log")
 RECIPES_MAPPING_FILE = os.path.join(INDEX_DIR, "mapping.jsonl")
-RECIPES_SPARK_PARTITIONS = 500
+RECIPES_SPARK_PARTITIONS = 32  # Optimal: 4x physical cores (8 cores) = ~413 files/partition for 13.2k files
 
 # ============================================================================
 # WIKI MAPPER SETTINGS
@@ -192,10 +192,9 @@ WIKI_INDEX_PATH = os.path.join(WIKI_DATA_DIR, WIKI_INDEX_FILE)
 WIKI_RECIPES_OUTPUT = os.path.join(INDEX_DIR, "wiki_recipes.jsonl")
 WIKI_SPARK_LOG = os.path.join(LOGS_DIR, "wiki_mapper_spark.log")
 WIKI_CHECKPOINT_DIR = os.path.join(CHECKPOINTS_DIR, "wiki_multistream")
+WIKI_CHECKPOINT_FILE = os.path.join(WIKI_CHECKPOINT_DIR, "state.json")
+WIKI_CLEAN_CHECKPOINTS = False  # Set to True to clean checkpoints on startup (restart from scratch)
 
-# Matching parameters
-WIKI_TITLE_WEIGHT = 0.3
-WIKI_INGREDIENT_WEIGHT = 0.7
 WIKI_MIN_MATCH_SCORE = 0.0  # Accept ALL matches (even low scores) to ensure every recipe gets matched
 
 # ============================================================================
