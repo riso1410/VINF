@@ -1,527 +1,574 @@
 import bz2
 import json
-import os
 import re
-import shutil
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from collections import defaultdict
+from typing import Optional
 
-from pyspark.sql import SparkSession, Row
-from pyspark import StorageLevel
+from pyspark.sql import SparkSession
 
 import config
 
 
-def sanitize_ingredient_text(value: str | None) -> str:
-    if not value:
-        return ""
-    cleaned = re.sub(r"[^a-z0-9\s]", "", value.lower())
-    return re.sub(r"\s+", " ", cleaned).strip()
+# ============================================================================
+# STEP 1: RECIPE NAME NORMALIZATION
+# ============================================================================
 
+def normalize_recipe_name(name: str) -> str:
+    """
+    Normalize recipe name for Wikipedia matching.
 
-def sanitize_ingredient_list(values: list[str] | None) -> list[str]:
-    if not values:
-        return []
-    sanitized: list[str] = []
-    for entry in values:
-        token = sanitize_ingredient_text(entry)
-        if token:
-            sanitized.append(token)
-    return sanitized
+    Args:
+        name: Recipe name to normalize
 
-
-def has_food_infobox(wikitext: str) -> bool:
-    if not wikitext:
-        return False
-
-    food_infobox_pattern = r"\{\{[Ii]nfobox\s+(?:[Ff]ood|[Dd]ish|[Bb]everage|[Dd]rink|[Cc]heese|[Bb]read|[Cc]ake|[Dd]essert|[Ss]oup|[Ss]alad|[Ss]auce|[Cc]ondiment|[Ii]ngredient|[Ss]pice|[Mm]eal|[Cc]uisine|[Pp]repared\s+[Ff]ood)"
-    return bool(re.search(food_infobox_pattern, wikitext))
-
-
-def extract_ingredients_from_wikitext(wikitext: str) -> list[str]:
-    if not wikitext:
-        return []
-    ingredients = set()
-
-    infobox_pattern = r"\{\{[Ii]nfobox\s+(?:[Ff]ood|[Dd]ish|[Bb]everage|[Dd]rink|[Cc]heese|[Bb]read|[Cc]ake|[Dd]essert|[Ss]oup|[Ss]alad|[Ss]auce|[Cc]ondiment|[Ii]ngredient|[Ss]pice|[Mm]eal|[Cc]uisine|[Pp]repared\s+[Ff]ood).*?\}\}"
-
-    for infobox in re.findall(infobox_pattern, wikitext, re.DOTALL):
-        fields = re.findall(
-            r"\|\s*(?:main_)?ingredient[s]?\s*=\s*([^\|]+)", infobox, re.IGNORECASE
-        )
-        for field in fields:
-            text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", field)
-            text = re.sub(r"<[^>]+>", "", text)
-            text = re.sub(r"\{\{[^}]+\}\}", "", text)
-            for part in re.split(r"[,;\n]", text):
-                token = sanitize_ingredient_text(part)
-                if len(token) > 2:
-                    ingredients.add(token)
-    for item in re.findall(r"[\*#]\s*([^\n]+)", wikitext)[:20]:
-        text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", item)
-        text = sanitize_ingredient_text(re.sub(r"<[^>]+>", "", text))
-        if 2 < len(text) < 50:
-            ingredients.add(text)
-    return list(ingredients)[:50]
-
-
-def extract_description_from_wikitext(wikitext: str) -> str:
-    """Extract description from Wikipedia wikitext - only the lead section."""
-    if not wikitext:
+    Returns:
+        Normalized recipe name
+    """
+    if not name:
         return ""
 
-    # Extract only the lead section (before first ==)
-    lead_match = re.search(r"^(.*?)(?:^==|\Z)", wikitext, re.MULTILINE | re.DOTALL)
-    if not lead_match:
-        return ""
-    
-    lead_text = lead_match.group(1).strip()
-    if not lead_text:
-        return ""
-    
-    # Clean wikitext markup
-    lead_text = re.sub(r"\{\{[^}]+\}\}", "", lead_text)
-    lead_text = re.sub(r"<ref[^>]*>.*?</ref>", "", lead_text, flags=re.DOTALL)
-    lead_text = re.sub(r"<!--.*?-->", "", lead_text, flags=re.DOTALL)
-    lead_text = re.sub(r"\[\[(?:[^\]]*\|)?([^\]]+)\]\]", r"\1", lead_text)
-    lead_text = re.sub(r"\[https?://[^\]]+\s+([^\]]+)\]", r"\1", lead_text)
-    lead_text = re.sub(r"[\[\]']", "", lead_text)
-    lead_text = re.sub(r"<[^>]+>", "", lead_text)
-    lead_text = re.sub(r"\s+", " ", lead_text).strip()
-    
-    # Truncate to reasonable length
-    if len(lead_text) > 500:
-        sentences = re.split(r"[.!?]+\s+", lead_text[:600])
-        result = []
-        length = 0
-        for sentence in sentences:
-            if length + len(sentence) <= 500:
-                result.append(sentence)
-                length += len(sentence)
-            else:
-                break
-        if result:
-            lead_text = ". ".join(result) + "."
-        else:
-            lead_text = lead_text[:500] + "..."
+    normalized = name.lower().strip()
+    normalized = re.sub(r'\([^)]*\)', '', normalized)  # Remove parentheticals
+    normalized = re.sub(r"'s\b", '', normalized)  # Remove possessives
+    normalized = re.sub(r'[^a-z0-9\s]', ' ', normalized)  # Keep alphanumeric
+    normalized = re.sub(r'\s+', ' ', normalized).strip()  # Collapse spaces
 
-    return lead_text
-
-
-def normalize_title(title: str) -> str:
-    if not title:
-        return ""
-    normalized = title.lower().strip()
-    normalized = re.sub(r"\s+", "_", normalized)
-    normalized = re.sub(r"[^a-z0-9_]", "_", normalized)
-    normalized = re.sub(r"_+", "_", normalized)
-    normalized = normalized.strip("_")
     return normalized
 
 
-def calculate_similarity(s1: str, s2: str) -> float:
-    if not s1 or not s2:
-        return 0.0
-    if s1 == s2:
-        return 1.0
-    
-    from difflib import SequenceMatcher
-    return SequenceMatcher(None, s1, s2).ratio()
+def extract_recipe_type(title: str) -> str:
+    """Extract recipe category from title."""
+    title_lower = title.lower()
 
-
-def build_wiki_url(title: str | None) -> str:
-    if not title:
-        return ""
-    sanitized = re.sub(r"\s+", "_", title.strip())
-    return f"https://en.wikipedia.org/wiki/{sanitized}"
-
-
-def extract_between_tags(page: str, tag: str) -> str:
-    match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", page, re.IGNORECASE | re.DOTALL)
-    if not match:
-        return ""
-    content = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", match.group(1), flags=re.DOTALL)
-    return content.strip()
-
-
-def process_recipe(recipe: dict) -> dict:
-    import hashlib
-
-    recipe["doc_id"] = hashlib.sha256(
-        (recipe.get("url") or recipe.get("title", "")).encode()
-    ).hexdigest()
-
-    for key in [
-        "url",
-        "title",
-        "description",
-        "method",
-        "chef",
-        "difficulty",
-        "prep_time",
-        "servings",
-    ]:
-        recipe.setdefault(key, "")
-
-    recipe["ingredients"] = sanitize_ingredient_list(recipe.get("ingredients"))
-    return recipe
-
-
-def extract_wiki_page(dump_path: str, offset_matches: tuple) -> list[dict]:
-    offset, matches = offset_matches
-    page_xml = read_page_at_offset(dump_path, offset)
-    if not page_xml:
-        return []
-
-    namespace = extract_between_tags(page_xml, "ns")
-    if namespace != "0":
-        return []
-
-    if "<redirect" in page_xml:
-        return []
-
-    title = extract_between_tags(page_xml, "title")
-    text = extract_between_tags(page_xml, "text")
-    if not text:
-        return []
-
-    if not has_food_infobox(text):
-        return []
-
-    wiki_data = {
-        "wiki_title": title,
-        "wiki_url": build_wiki_url(title),
-        "wiki_ingredients": sanitize_ingredient_list(
-            extract_ingredients_from_wikitext(text)
-        ),
-        "wiki_description": extract_description_from_wikitext(text),
+    categories = {
+        'dessert': ['cake', 'cookie', 'pie', 'tart', 'pudding', 'ice cream', 'brownie'],
+        'soup': ['soup', 'stew', 'chowder', 'bisque'],
+        'salad': ['salad'],
+        'pasta': ['pasta', 'spaghetti', 'linguine', 'fettuccine', 'lasagna'],
+        'bread': ['bread', 'roll', 'bun', 'biscuit'],
+        'beverage': ['drink', 'cocktail', 'smoothie', 'juice', 'tea', 'coffee'],
     }
 
-    return [
-        {
-            "doc_id": m["doc_id"],
-            **wiki_data,
-        }
-        for m in matches
-    ]
+    for category, keywords in categories.items():
+        if any(keyword in title_lower for keyword in keywords):
+            return category
+
+    return 'main'
 
 
-def merge_recipe_wiki(doc_id_recipe_wiki: tuple) -> dict:
-    _, (recipe, wiki) = doc_id_recipe_wiki
+# ============================================================================
+# STEP 2: WIKIPEDIA INDEX SEARCH
+# ============================================================================
 
-    recipe.update(
-        {
-            "wiki_title": wiki.get("wiki_title", "") if wiki else "",
-            "wiki_url": wiki.get("wiki_url", "") if wiki else "",
-            "wiki_ingredients": wiki.get("wiki_ingredients", []) if wiki else [],
-            "wiki_description": wiki.get("wiki_description", "") if wiki else "",
-        }
-    )
-    return recipe
-
-
-def remove_internal_fields(record: dict) -> dict:
-    return {k: v for k, v in record.items() if k not in ("doc_id", "offset", "similarity")}
-
-
-def create_spark_session() -> SparkSession:
-    return (
-        SparkSession.builder.appName("WikipediaRecipeMapper")
-        .master("local[*]")
-        .config("spark.driver.memory", "3g")
-        .config("spark.executor.memory", "3g")
-        .config("spark.memory.fraction", "0.8")  
-        .config("spark.memory.storageFraction", "0.5")  
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        .config("spark.kryoserializer.buffer.max", "512m")
-        .getOrCreate()
-    )
-
-
-def parse_index_line(line: str) -> tuple[int, int, str] | None:
+def parse_index_entry(line: str) -> tuple[int, int, str] | None:
+    """Parse Wikipedia multistream index line."""
     if not line or not line.strip():
         return None
 
-    parts = line.strip().split(":", 2)
-    offset = int(parts[0])
-    page_id = int(parts[1])
-    title = parts[2]
-    return (offset, page_id, title)
+    try:
+        parts = line.strip().split(':', 2)
+        if len(parts) < 3:
+            return None
+
+        offset = int(parts[0])
+        page_id = int(parts[1])
+        title = parts[2]
+
+        return (offset, page_id, title)
+    except (ValueError, IndexError):
+        return None
 
 
-def read_page_at_offset(dump_path: str, offset: int) -> str | None:
-    with open(dump_path, "rb") as f:
-        f.seek(offset)
-        decompressor = bz2.BZ2Decompressor()
+def calculate_similarity(recipe_name: str, wiki_title: str) -> float:
+    """Calculate Jaccard similarity between recipe and Wikipedia title."""
+    if not recipe_name or not wiki_title:
+        return 0.0
 
-        buffer = []
-        found_page = False
-        page_depth = 0
+    if recipe_name == wiki_title:
+        return 1.0
 
-        # Read chunks
-        while True:
-            chunk = f.read(8192)  # 8KB chunks
-            if not chunk:
-                break
+    recipe_words = set(recipe_name.split())
+    wiki_words = set(wiki_title.split())
 
-            try:
-                text = decompressor.decompress(chunk).decode(
-                    "utf-8", errors="ignore"
-                )
-            except EOFError:
-                break
+    if not recipe_words or not wiki_words:
+        return 0.0
 
-            buffer.append(text)
+    intersection = len(recipe_words & wiki_words)
+    union = len(recipe_words | wiki_words)
 
-            for line in text.split("\n"):
-                if "<page>" in line:
-                    found_page = True
-                    page_depth += 1
-                if "</page>" in line:
-                    page_depth -= 1
-                    if found_page and page_depth == 0:
-                        full_text = "".join(buffer)
-                        match = re.search(r"<page>.*?</page>", full_text, re.DOTALL)
+    return intersection / union if union > 0 else 0.0
+
+
+def find_wikipedia_matches(recipes: list[dict], logger) -> list[dict]:
+    """
+    Search Wikipedia index for recipe matches.
+
+    Args:
+        recipes: List of recipe dictionaries with 'url' and 'title'
+        logger: Logger instance
+
+    Returns:
+        List of matched pages with offsets
+    """
+    logger.info("=" * 70)
+    logger.info("STEP 1/3: SEARCHING WIKIPEDIA INDEX")
+    logger.info("=" * 70)
+
+    # Build lookup structures
+    exact_lookup = {}
+    fuzzy_lookup = defaultdict(list)
+
+    for recipe in recipes:
+        title = recipe.get('title', '')
+        if not title:
+            continue
+
+        normalized = normalize_recipe_name(title)
+        if not normalized:
+            continue
+
+        recipe_data = {
+            'url': recipe.get('url', ''),
+            'title': title,
+            'normalized': normalized,
+            'type': extract_recipe_type(title),
+        }
+
+        exact_lookup[normalized] = recipe_data
+
+        # Index by first word for fuzzy matching
+        first_word = normalized.split()[0] if normalized else ''
+        if first_word and len(first_word) >= 3:
+            fuzzy_lookup[first_word].append(recipe_data)
+
+    logger.info(f"Prepared {len(recipes):,} recipes for matching")
+    logger.info(f"  Exact lookup: {len(exact_lookup):,} entries")
+    logger.info(f"  Fuzzy lookup: {len(fuzzy_lookup):,} first-word groups")
+
+    # Search index
+    index_path = config.WIKI_INDEX_PATH
+    if not Path(index_path).exists():
+        logger.error(f"Wikipedia index not found: {index_path}")
+        raise FileNotFoundError(f"Wikipedia index not found: {index_path}")
+
+    logger.info(f"\nSearching index: {index_path}")
+
+    exact_matches = []
+    fuzzy_matches = []
+    processed_lines = 0
+
+    with bz2.open(index_path, 'rt', encoding='utf-8') as f:
+        for line in f:
+            processed_lines += 1
+
+            if processed_lines % 100000 == 0:
+                total_found = len(exact_matches) + len(fuzzy_matches)
+                logger.info(f"  Processed {processed_lines:,} entries, found {total_found:,} matches...")
+
+            parsed = parse_index_entry(line)
+            if not parsed:
+                continue
+
+            offset, page_id, wiki_title = parsed
+            normalized_wiki = normalize_recipe_name(wiki_title)
+
+            if not normalized_wiki:
+                continue
+
+            # Try exact match
+            if normalized_wiki in exact_lookup:
+                recipe_data = exact_lookup[normalized_wiki]
+                exact_matches.append({
+                    'offset': offset,
+                    'page_id': page_id,
+                    'wiki_title': wiki_title,
+                    'recipe_url': recipe_data['url'],
+                    'recipe_title': recipe_data['title'],
+                    'recipe_type': recipe_data['type'],
+                    'match_type': 'exact',
+                    'similarity': 1.0
+                })
+                continue
+
+            # Try fuzzy match
+            first_word = normalized_wiki.split()[0] if normalized_wiki else ''
+            if first_word in fuzzy_lookup:
+                for candidate in fuzzy_lookup[first_word]:
+                    similarity = calculate_similarity(candidate['normalized'], normalized_wiki)
+
+                    if similarity >= 0.6:  
+                        fuzzy_matches.append({
+                            'offset': offset,
+                            'page_id': page_id,
+                            'wiki_title': wiki_title,
+                            'recipe_url': candidate['url'],
+                            'recipe_title': candidate['title'],
+                            'recipe_type': candidate['type'],
+                            'match_type': 'fuzzy',
+                            'similarity': similarity
+                        })
+                        break
+
+    all_matches = exact_matches + fuzzy_matches
+
+    logger.info(f"\nProcessed {processed_lines:,} index entries")
+    logger.info(f"  Exact matches: {len(exact_matches):,}")
+    logger.info(f"  Fuzzy matches: {len(fuzzy_matches):,}")
+    logger.info(f"  Total matches: {len(all_matches):,}")
+    logger.info(f"  Match rate: {len(all_matches)/len(recipes)*100:.1f}%\n")
+
+    return all_matches
+
+
+# ============================================================================
+# STEP 3: WIKIPEDIA PAGE EXTRACTION
+# ============================================================================
+
+def extract_ingredients_from_wikitext(wikitext: str) -> list[str]:
+    """Extract ingredients from Wikipedia article wikitext."""
+    if not wikitext:
+        return []
+
+    ingredients = set()
+
+    # Food infobox pattern
+    infobox_pattern = r'\{\{[Ii]nfobox\s+(?:food|dish|beverage|prepared food).*?\}\}'
+
+    for infobox in re.findall(infobox_pattern, wikitext, re.DOTALL | re.IGNORECASE):
+        ing_fields = re.findall(
+            r'\|\s*(?:main_)?ingredient[s]?\s*=\s*([^\|]+)',
+            infobox,
+            re.IGNORECASE
+        )
+
+        for field in ing_fields:
+            cleaned = re.sub(r'\[\[(?:[^\]]*\|)?([^\]]+)\]\]', r'\1', field)
+            cleaned = re.sub(r'\{\{[^}]+\}\}', '', cleaned)
+            cleaned = re.sub(r'<[^>]+>', '', cleaned)
+
+            for part in re.split(r'[,\n]', cleaned):
+                ingredient = part.strip().lower()
+                if ingredient and 2 < len(ingredient) < 50:
+                    ingredients.add(ingredient)
+
+    return sorted(list(ingredients))[:30]
+
+
+def extract_description_from_wikitext(wikitext: str) -> str:
+    """Extract description from Wikipedia article lead section."""
+    if not wikitext:
+        return ""
+
+    lead_match = re.search(r'^(.*?)(?:^==|\Z)', wikitext, re.MULTILINE | re.DOTALL)
+    if not lead_match:
+        return ""
+
+    lead = lead_match.group(1)
+
+    # Clean markup
+    lead = re.sub(r'\{\{[^}]+\}\}', '', lead)
+    lead = re.sub(r'<ref[^>]*>.*?</ref>', '', lead, flags=re.DOTALL)
+    lead = re.sub(r'<!--.*?-->', '', lead, flags=re.DOTALL)
+    lead = re.sub(r'\[\[(?:[^\]]*\|)?([^\]]+)\]\]', r'\1', lead)
+    lead = re.sub(r"['\"]+", '', lead)
+    lead = re.sub(r'<[^>]+>', '', lead)
+    lead = re.sub(r'\s+', ' ', lead).strip()
+
+    # Take first 500 chars
+    if len(lead) > 500:
+        lead = lead[:500].rsplit('.', 1)[0] + '.'
+
+    return lead
+
+
+def read_page_at_offset(dump_path: str, offset: int, target_title: str) -> Optional[str]:
+    """Read Wikipedia page XML at specific byte offset."""
+    try:
+        with open(dump_path, 'rb') as f:
+            f.seek(offset)
+
+            decompressor = bz2.BZ2Decompressor()
+            buffer = []
+            max_read = 10 * 1024 * 1024  # 10MB limit
+            bytes_read = 0
+
+            while bytes_read < max_read:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+
+                try:
+                    decompressed = decompressor.decompress(chunk)
+                    buffer.append(decompressed.decode('utf-8', errors='ignore'))
+                    bytes_read += len(chunk)
+
+                    current_text = ''.join(buffer)
+                    if '</page>' in current_text:
+                        match = re.search(r'<page>.*?</page>', current_text, re.DOTALL)
                         if match:
-                            return match.group(0)
-                        return None
+                            page_xml = match.group(0)
+                            if f'<title>{target_title}</title>' in page_xml:
+                                return page_xml
+                        break
 
-    return None
+                except EOFError:
+                    break
 
-class WikipediaRecipeMapper:
-    def __init__(
-        self,
-        spark: SparkSession,
-        wiki_dump_path: str,
-        wiki_index_path: str,
-        output_path: str,
-        recipes_path: str | None = None,
-    ) -> None:
-        self.sc = spark.sparkContext
-        self.wiki_dump_path = wiki_dump_path
-        self.wiki_index_path = wiki_index_path
-        self.output_path = output_path
-        self.recipes_path = recipes_path or config.RECIPES_FILE
-        self.logger = config.setup_logging(config.WIKI_SPARK_LOG)
+        return None
 
-    def run(self) -> None:
-        self.prepare_environment()
+    except Exception:
+        return None
 
-        recipes_data = self.load_recipes()
-        matches_data = self.match_titles(recipes_data)
-        wiki_data_data = self.extract_wiki_data(matches_data)
-        final_data = self.join_recipes_with_wiki_data(recipes_data, wiki_data_data)
-        total = self.write_output(final_data)
 
-        self.logger.info(
-            "✓ Pipeline complete: %s recipes enriched with Wikipedia data", f"{total:,}"
-        )
+def process_matched_page(match_data: dict, dump_path: str) -> Optional[dict]:
+    """Process a single matched Wikipedia page."""
+    try:
+        offset = match_data['offset']
+        wiki_title = match_data['wiki_title']
 
-        recipes_data.unpersist()
-        matches_data.unpersist()
-        wiki_data_data.unpersist()
+        page_xml = read_page_at_offset(dump_path, offset, wiki_title)
+        if not page_xml:
+            return None
 
-    def prepare_environment(self) -> None:
-        os.makedirs(config.LOGS_DIR, exist_ok=True)
-        os.makedirs(config.DATA_DIR, exist_ok=True)
+        try:
+            root = ET.fromstring(page_xml)
+        except ET.ParseError:
+            return None
 
-    def load_recipes(self):
-        self.logger.info("STEP 1/5: Loading Recipes")
+        text_elem = root.find('.//text')
+        if text_elem is None or not text_elem.text:
+            return None
 
-        rdd = (
-            self.sc.textFile(self.recipes_path)
-            .map(json.loads)
-            .map(process_recipe)
-            .persist(StorageLevel.MEMORY_ONLY)
-        )
+        wikitext = text_elem.text
 
-        self.logger.info("  Loaded %s recipes\n", f"{rdd.count():,}")
-        return rdd
+        return {
+            'recipe_url': match_data['recipe_url'],
+            'wiki_title': wiki_title,
+            'wiki_url': f"https://en.wikipedia.org/wiki/{wiki_title.replace(' ', '_')}",
+            'wiki_ingredients': extract_ingredients_from_wikitext(wikitext),
+            'wiki_description': extract_description_from_wikitext(wikitext),
+            'match_type': match_data['match_type'],
+            'match_similarity': match_data['similarity'],
+        }
 
-    def match_titles(self, recipes_data):
-        self.logger.info("STEP 2/5: Matching Recipe Titles to Wikipedia")
+    except Exception:
+        return None
 
-        wiki_index_data = (
-            self.sc.textFile(self.wiki_index_path)
-            .map(parse_index_line)
-            .filter(lambda x: x is not None)
-        )
 
-        total_wiki_pages = wiki_index_data.count()
-        self.logger.info("  Loaded %s Wikipedia article pages", f"{total_wiki_pages:,}")
-        
-        recipes_with_normalized = recipes_data.map(
-            lambda r: (normalize_title(r.get("title", "")), r)
-        ).filter(lambda x: x[0])  
-        
-        wiki_with_normalized = wiki_index_data.map(
-            lambda w: (normalize_title(w[2]), {"offset": w[0], "page_id": w[1], "wiki_title": w[2], "normalized": normalize_title(w[2])})
-        ).filter(lambda x: x[0])  # Filter out empty titles
-        
-        # First try exact match with INNER JOIN
-        exact_joined = recipes_with_normalized.join(wiki_with_normalized)
-        
-        exact_matches = exact_joined.map(
-            lambda x: {
-                "doc_id": x[1][0]["doc_id"],
-                "wiki_title": x[1][1]["wiki_title"],
-                "offset": x[1][1]["offset"],
-                "similarity": 1.0,
-            }
-        )
-        
-        # Get recipes that didn't match exactly
-        matched_doc_ids = exact_matches.map(lambda m: m["doc_id"]).collect()
-        matched_doc_ids_set = set(matched_doc_ids)
-        
-        unmatched_recipes = recipes_data.filter(
-            lambda r: r["doc_id"] not in matched_doc_ids_set
-        )
-        
-        # Broadcast wiki index for fuzzy matching (only if we have unmatched recipes)
-        unmatched_count = unmatched_recipes.count()
-        self.logger.info(f"  Exact matches: {len(matched_doc_ids_set):,}")
-        
-        if unmatched_count > 0:
-            self.logger.info(f"  Performing fuzzy matching for {unmatched_count:,} unmatched recipes...")
-            
-            # Collect wiki titles for fuzzy matching (this is expensive but necessary)
-            wiki_titles = wiki_with_normalized.collect()
-            wiki_titles_broadcast = self.sc.broadcast(wiki_titles)
-            
-            def find_best_fuzzy_match(recipe):
-                recipe_title = normalize_title(recipe.get("title", ""))
-                if not recipe_title:
-                    return None
-                
-                best_match = None
-                best_similarity = 0.5  # Minimum 50% similarity threshold
-                
-                for norm_wiki_title, wiki_data in wiki_titles_broadcast.value:
-                    similarity = calculate_similarity(recipe_title, norm_wiki_title)
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_match = {
-                            "doc_id": recipe["doc_id"],
-                            "wiki_title": wiki_data["wiki_title"],
-                            "offset": wiki_data["offset"],
-                            "similarity": similarity,
-                        }
-                
-                return best_match
-            
-            fuzzy_matches = (
-                unmatched_recipes
-                .map(find_best_fuzzy_match)
-                .filter(lambda x: x is not None)
-            )
-            
-            # Combine exact and fuzzy matches
-            matches_data = exact_matches.union(fuzzy_matches).persist(StorageLevel.MEMORY_ONLY)
-            
-            fuzzy_count = fuzzy_matches.count()
-            self.logger.info(f"  Fuzzy matches (>50% similarity): {fuzzy_count:,}")
+def process_offset_batch(batch_data: tuple) -> list[dict]:
+    """Process all pages at a single offset."""
+    offset, matches, dump_path = batch_data
+    results = []
+
+    for match in matches:
+        result = process_matched_page(match, dump_path)
+        if result:
+            results.append(result)
+
+    return results
+
+
+def extract_wikipedia_pages(matches: list[dict], logger) -> list[dict]:
+    """
+    Extract Wikipedia pages using PySpark.
+
+    Args:
+        matches: List of matched pages with offsets
+        logger: Logger instance
+
+    Returns:
+        List of extracted Wikipedia data
+    """
+    logger.info("=" * 70)
+    logger.info("STEP 2/3: EXTRACTING WIKIPEDIA PAGES")
+    logger.info("=" * 70)
+
+    # Group by offset
+    offset_groups = defaultdict(list)
+    for match in matches:
+        offset_groups[match['offset']].append(match)
+
+    logger.info(f"Grouped {len(matches):,} matches into {len(offset_groups):,} unique offsets")
+
+    # Check dump
+    dump_path = config.WIKI_DUMP_PATH
+    if not Path(dump_path).exists():
+        logger.error(f"Wikipedia dump not found: {dump_path}")
+        raise FileNotFoundError(f"Wikipedia dump not found: {dump_path}")
+
+    # Initialize Spark
+    logger.info("\nInitializing PySpark...")
+
+    spark = SparkSession.builder \
+        .appName("Wikipedia Recipe Extractor") \
+        .config("spark.driver.memory", "4g") \
+        .config("spark.executor.memory", "4g") \
+        .config("spark.sql.shuffle.partitions", "50") \
+        .getOrCreate()
+
+    try:
+        # Prepare tasks
+        tasks = [(offset, matches, dump_path) for offset, matches in offset_groups.items()]
+        num_partitions = max(1, len(tasks) // 20)
+
+        logger.info(f"Using {num_partitions} Spark partitions for {len(tasks):,} tasks")
+        logger.info("Starting parallel extraction...\n")
+
+        # Parallel extraction
+        rdd = spark.sparkContext.parallelize(tasks, num_partitions)
+        results_rdd = rdd.flatMap(process_offset_batch)
+        extracted = results_rdd.collect()
+
+        logger.info(f"Successfully extracted {len(extracted):,} Wikipedia pages")
+        logger.info(f"Extraction success rate: {len(extracted)/len(matches)*100:.1f}%")
+
+        # Statistics
+        with_ingredients = sum(1 for r in extracted if r['wiki_ingredients'])
+        logger.info(f"Pages with ingredients: {with_ingredients:,} ({with_ingredients/len(extracted)*100:.1f}%)\n")
+
+        return extracted
+
+    finally:
+        spark.stop()
+
+
+# ============================================================================
+# STEP 4: MERGE RECIPES WITH WIKIPEDIA DATA
+# ============================================================================
+
+def merge_recipes_with_wikipedia(recipes: list[dict], wiki_data: list[dict], logger) -> list[dict]:
+    """
+    Merge recipes with Wikipedia data.
+
+    Args:
+        recipes: List of recipe dictionaries
+        wiki_data: List of extracted Wikipedia data
+        logger: Logger instance
+
+    Returns:
+        List of enriched recipes
+    """
+    logger.info("=" * 70)
+    logger.info("STEP 3/3: MERGING RECIPES WITH WIKIPEDIA DATA")
+    logger.info("=" * 70)
+
+    # Build lookup by URL
+    wiki_lookup = {}
+    for wiki_item in wiki_data:
+        url = wiki_item['recipe_url']
+        wiki_lookup[url] = wiki_item
+
+    # Merge
+    enriched = []
+    matched_count = 0
+
+    for recipe in recipes:
+        url = recipe.get('url', '')
+
+        enriched_recipe = recipe.copy()
+
+        if url in wiki_lookup:
+            wiki_item = wiki_lookup[url]
+            enriched_recipe.update({
+                'wiki_title': wiki_item['wiki_title'],
+                'wiki_url': wiki_item['wiki_url'],
+                'wiki_ingredients': wiki_item['wiki_ingredients'],
+                'wiki_description': wiki_item['wiki_description'],
+            })
+            matched_count += 1
         else:
-            matches_data = exact_matches.persist(StorageLevel.MEMORY_ONLY)
+            enriched_recipe.update({
+                'wiki_title': '',
+                'wiki_url': '',
+                'wiki_ingredients': [],
+                'wiki_description': '',
+            })
 
-        matched_count = matches_data.count()
-        total_recipes = recipes_data.count()
+        enriched.append(enriched_recipe)
 
-        self.logger.info(
-            "Total matched: %s / %s recipes (%.1f%%)\n",
-            f"{matched_count:,}",
-            f"{total_recipes:,}",
-            100.0 * matched_count / total_recipes if total_recipes > 0 else 0,
-        )
+    logger.info(f"Total recipes: {len(recipes):,}")
+    logger.info(f"Matched with Wikipedia: {matched_count:,}")
+    logger.info(f"Match rate: {matched_count/len(recipes)*100:.1f}%\n")
 
-        return matches_data
-
-    def extract_wiki_data(self, matches_data):
-        self.logger.info("STEP 3/5: Extracting Wikipedia Data")
-
-        dump_path = self.wiki_dump_path
-
-        from functools import partial
-        extract_func = partial(extract_wiki_page, dump_path)
-
-        wiki_data_data = (
-            matches_data.map(lambda m: (m["offset"], m))
-            .groupByKey()
-            .flatMap(extract_func)
-            .persist(StorageLevel.MEMORY_ONLY)
-        )
-
-        extracted_count = wiki_data_data.count()
-        matched_pages = matches_data.count()
-        self.logger.info(
-            "Extracted data from %s pages (out of %s matched, %.1f%% had food infoboxes)\n",
-            f"{extracted_count:,}",
-            f"{matched_pages:,}",
-            100.0 * extracted_count / matched_pages if matched_pages > 0 else 0,
-        )
-
-        return wiki_data_data
-
-    def join_recipes_with_wiki_data(self, recipes_data, wiki_data_data):
-        self.logger.info("STEP 4/5: Joining Recipes with Wikipedia Data")
-
-        joined_data = (
-            recipes_data.map(lambda r: (r["doc_id"], r))
-            .leftOuterJoin(wiki_data_data.map(lambda w: (w["doc_id"], w)))
-            .map(merge_recipe_wiki)
-        )
-
-        matched = joined_data.filter(lambda r: r["wiki_url"]).count()
-        total = joined_data.count()
-
-        self.logger.info(
-            "Joined %s / %s recipes (%.1f%%)\n",
-            f"{matched:,}",
-            f"{total:,}",
-            100.0 * matched / total if total > 0 else 0,
-        )
-
-        return joined_data
-
-    def write_output(self, final_data) -> int:
-        self.logger.info("STEP 5/5: Writing Output")
-
-        os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
-
-        output_data = final_data.map(remove_internal_fields)
-        count = output_data.count()
-
-        output_df = output_data.map(lambda x: Row(**x)).toDF()
-
-        temp_path = self.output_path + ".tmp"
-        output_df.coalesce(1).write.mode("overwrite").json(temp_path)
-
-        part_files = [
-            f
-            for f in os.listdir(temp_path)
-            if f.startswith("part-") and f.endswith(".json")
-        ]
-        temp_path = self.output_path + ".tmp"
-        output_df.coalesce(1).write.mode("overwrite").json(temp_path)
-
-        part_files = [f for f in os.listdir(temp_path) if f.startswith('part-') and f.endswith('.json')]
-        if part_files:
-            shutil.move(os.path.join(temp_path, part_files[0]), self.output_path)
-            shutil.rmtree(temp_path, ignore_errors=True)
-
-        self.logger.info("Wrote %s records to %s\n", f"{count:,}", self.output_path)
-        return count
+    return enriched
 
 
-def main() -> None:
-    spark = create_spark_session()
-    mapper = WikipediaRecipeMapper(
-        spark,
-        wiki_dump_path=config.WIKI_DUMP_PATH,
-        wiki_index_path=config.WIKI_INDEX_PATH,
-        output_path=config.WIKI_RECIPES_OUTPUT,
-        recipes_path=config.RECIPES_FILE,
-    )
-    mapper.run()
-    spark.stop()
+# ============================================================================
+# MAIN PIPELINE
+# ============================================================================
+
+def main():
+    """Main execution: complete Wikipedia enrichment pipeline."""
+    logger = config.setup_logging(config.WIKI_SPARK_LOG)
+
+    logger.info("=" * 70)
+    logger.info("WIKIPEDIA RECIPE ENRICHMENT PIPELINE")
+    logger.info("=" * 70)
+    logger.info("")
+
+    # Load recipes
+    recipes_file = config.RECIPES_FILE
+    if not Path(recipes_file).exists():
+        logger.error(f"Recipes file not found: {recipes_file}")
+        return
+
+    logger.info(f"Loading recipes from: {recipes_file}")
+    recipes = []
+
+    with open(recipes_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                recipe = json.loads(line)
+                if recipe.get('title'):
+                    recipes.append(recipe)
+            except json.JSONDecodeError:
+                continue
+
+    logger.info(f"Loaded {len(recipes):,} recipes\n")
+
+    # Step 1: Find Wikipedia matches
+    matches = find_wikipedia_matches(recipes, logger)
+
+    if not matches:
+        logger.warning("No Wikipedia matches found!")
+        return
+
+    # Step 2: Extract Wikipedia pages
+    wiki_data = extract_wikipedia_pages(matches, logger)
+
+    # Step 3: Merge
+    enriched_recipes = merge_recipes_with_wikipedia(recipes, wiki_data, logger)
+
+    # Save output
+    output_file = config.WIKI_RECIPES_OUTPUT
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Writing output to: {output_file}")
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for recipe in enriched_recipes:
+            json.dump(recipe, f, ensure_ascii=False)
+            f.write('\n')
+
+    logger.info(f"Saved {len(enriched_recipes):,} enriched recipes")
+
+    # Show sample
+    logger.info("Sample enriched recipes (first 3 with Wikipedia data):")
+    sample_count = 0
+    for recipe in enriched_recipes:
+        if recipe.get('wiki_url'):
+            logger.info(f"\n  Recipe: {recipe['title']}")
+            logger.info(f"  Wikipedia: {recipe.get('wiki_title', 'N/A')}")
+            ing_count = len(recipe.get('wiki_ingredients', []))
+            logger.info(f"  Wikipedia ingredients: {ing_count}")
+            sample_count += 1
+            if sample_count >= 3:
+                break
+
+    logger.info("\n" + "=" * 70)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("=" * 70)
 
 
 if __name__ == "__main__":

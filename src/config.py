@@ -177,7 +177,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 RECIPES_SPARK_LOG = os.path.join(LOGS_DIR, "recipes_extraction_spark.log")
 RECIPES_MAPPING_FILE = os.path.join(INDEX_DIR, "mapping.jsonl")
-RECIPES_SPARK_PARTITIONS = 32  # Optimal: 4x physical cores (8 cores) = ~413 files/partition for 13.2k files
+RECIPES_SPARK_PARTITIONS = 400  # Optimal: 4x physical cores (8 cores) = ~413 files/partition for 13.2k files
 
 # ============================================================================
 # WIKI MAPPER SETTINGS
