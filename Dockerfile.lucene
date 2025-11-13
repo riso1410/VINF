@@ -1,0 +1,22 @@
+FROM coady/pylucene:10.0.0
+
+# Install additional dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Copy Lucene search scripts
+COPY src/lucene_indexer.py ./
+COPY src/lucene_search.py ./
+
+# Create data directories
+RUN mkdir -p data logs
+
+# Default command: keep container running for CLI access
+CMD ["/bin/bash"]

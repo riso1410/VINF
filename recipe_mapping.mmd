@@ -1,0 +1,48 @@
+graph TB
+    subgraph Input["Data Sources"]
+        R[("Recipes<br/>13,200 items<br/>Food Network UK")]
+        W[("Wikipedia Index<br/>25M articles<br/>multistream dump")]
+    end
+
+    subgraph Preprocessing["Spark Preprocessing"]
+        R --> R1["Normalize"]
+        R1 --> R2["Tokenize"]
+        R2 --> R3["Remove Stopwords"]
+        R3 --> R4["Token Explosion<br/>expand for join"]
+        
+        W --> W1["Parse Index<br/>offset:id:title"]
+        W1 --> W2["Normalize Titles"]
+        W2 --> W3["Tokenize"]
+        W3 --> W4["Remove Stopwords"]
+        W4 --> W5["Token Explosion"]
+    end
+
+    subgraph Matching["Fuzzy Matching Pipeline"]
+        R4 --> J["Inner Join on Tokens<br/>2M candidates"]
+        W5 --> J
+        J --> L["Calculate Levenshtein<br/>Similarity Score"]
+        L --> F["Filter >= 0.45<br/>similarity threshold"]
+        F --> B["Select Best Match<br/>per recipe (Window)"]
+    end
+
+    subgraph Enrichment["Description Extraction"]
+        B --> M["7,205 matches<br/>with offsets"]
+        M --> D["Seek to offset<br/>in dump file"]
+        D --> X["Decompress bz2 block"]
+        X --> RE["Extract with REGEX<br/>first section"]
+        RE --> CL["Clean markup<br/>refs, templates, links"]
+    end
+
+    subgraph Output["Final Results"]
+        CL --> O[("wiki_matches.jsonl<br/>7,205 enriched matches")]
+    end
+
+    style R fill:#e1f5ff
+    style W fill:#e1f5ff
+    style J fill:#fff4e1
+    style L fill:#fff4e1
+    style F fill:#fff4e1
+    style B fill:#fff4e1
+    style RE fill:#e8f5e9
+    style CL fill:#e8f5e9
+    style O fill:#f3e5f5

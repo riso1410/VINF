@@ -1,12 +1,3 @@
-"""
-Recipe extraction from HTML files using PySpark.
-
-This script processes HTML recipe pages in parallel using PySpark:
-1. Converts HTML to markdown
-2. Extracts structured recipe data
-3. Outputs in multiple formats with statistics
-"""
-
 import logging
 from pathlib import Path
 
@@ -29,15 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 def process_html_file(html_file_path: str):
-    """
-    Process a single HTML file and extract recipe data.
-
-    Args:
-        html_file_path: Path to the HTML file
-
-    Returns:
-        Dictionary with recipe data or None if processing failed
-    """
     # Import inside function to avoid pickle issues with Spark
     from markitdown import MarkItDown
     from recipe_parser import parse_recipe_html, should_skip_metadata

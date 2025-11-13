@@ -9,7 +9,6 @@ services:
       - ./logs:/app/logs
       - ./scripts:/app/scripts
       - ./src:/app/src
-      - ./checkpoints:/app/checkpoints
     environment:
       - PYSPARK_PYTHON=/usr/local/bin/python
       - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
@@ -17,3 +16,19 @@ services:
     mem_limit: 8g
     cpus: "8"
     command: ["./scripts/run_spark_pipeline.sh"]
+  lucene-search:
+    build:
+      context: .
+      dockerfile: Dockerfile.lucene
+    container_name: lucene-search
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./src/lucene_indexer.py:/app/lucene_indexer.py:ro
+      - ./src/lucene_search.py:/app/lucene_search.py:ro
+      - ./data/index/wiki_matches.jsonl:/app/data/wiki_matches.jsonl:ro
+      - ./lucene-index:/app/index
+    environment:
+      - DATA_FILE=/app/data/wiki_matches.jsonl
+      - INDEX_DIR=/app/index
+      - PYTHONUNBUFFERED=1
