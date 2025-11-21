@@ -26,9 +26,9 @@ services:
     volumes:
       - ./src/lucene_indexer.py:/app/lucene_indexer.py:ro
       - ./src/lucene_search.py:/app/lucene_search.py:ro
-      - ./data/index/wiki_matches.jsonl:/app/data/wiki_matches.jsonl:ro
+      - ./data/index/wiki_recipes.jsonl:/app/data/wiki_recipes.jsonl:ro
       - ./lucene-index:/app/index
     environment:
-      - DATA_FILE=/app/data/wiki_matches.jsonl
+      - DATA_FILE=/app/data/wiki_recipes.jsonl
       - INDEX_DIR=/app/index
       - PYTHONUNBUFFERED=1
