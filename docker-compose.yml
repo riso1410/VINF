@@ -24,9 +24,8 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./src/lucene_indexer.py:/app/lucene_indexer.py:ro
-      - ./src/lucene_search.py:/app/lucene_search.py:ro
-      - ./data/index/wiki_recipes.jsonl:/app/data/wiki_recipes.jsonl:ro
+      - ./src:/app/src
+      - ./data:/app/data
       - ./lucene-index:/app/index
     environment:
       - DATA_FILE=/app/data/wiki_recipes.jsonl

@@ -1,4 +1,5 @@
 import os
+import sys
 
 import lucene
 from java.nio.file import Paths as JavaPaths
@@ -46,14 +47,14 @@ def init_searcher(index_dir):
 
     lucene.initVM(vmargs=["-Djava.awt.headless=true"])
 
-    print(f"Opening index from: {index_dir}")
+    sys.stderr.write(f"Opening index from: {index_dir}\n")
 
     store = MMapDirectory(JavaPaths.get(index_dir))
     reader = DirectoryReader.open(store)
     searcher = IndexSearcher(reader)
     analyzer = StandardAnalyzer()
 
-    print(f"Index loaded: {reader.numDocs():,} documents")
+    sys.stderr.write(f"Index loaded: {reader.numDocs():,} documents\n")
     return searcher
 
 
@@ -124,6 +125,21 @@ def search_recipes(query_text, max_results=10, fields=None):
         return {"error": str(e)}
 
 
+def batch_search():
+    import json
+    import sys
+
+    # Read queries from stdin
+    for line in sys.stdin:
+        query = line.strip()
+        if not query:
+            continue
+
+        results = search_recipes(query, max_results=10)
+        print(json.dumps(results))
+        sys.stdout.flush()
+
+
 def interactive_search():
     print("\n" + "=" * 70)
     print("RECIPE SEARCH - Interactive Mode")
@@ -182,9 +198,12 @@ def main():
         print("Please run the indexer first.")
         return
 
-    init_searcher(index_dir)
-
-    interactive_search()
+    if len(sys.argv) > 1 and sys.argv[1] == "batch":
+        init_searcher(index_dir)
+        batch_search()
+    else:
+        init_searcher(index_dir)
+        interactive_search()
 
 
 if __name__ == "__main__":

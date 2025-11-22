@@ -4,7 +4,10 @@ FROM coady/pylucene:10.0.0
 RUN apt-get update && apt-get install -y \
     wget \
     vim \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install tabulate
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

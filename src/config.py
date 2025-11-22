@@ -6,7 +6,10 @@ Contains all hyperparameters and settings for crawler, scraper, indexer, and sea
 import logging
 import os
 
-from selenium.webdriver.chrome.options import Options
+try:
+    from selenium.webdriver.chrome.options import Options
+except ImportError:
+    Options = None
 
 # Get the project root directory (parent of src/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
