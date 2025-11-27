@@ -145,8 +145,8 @@ def create_index(data_file, index_dir):
 
 
 def main():
-    data_file = os.getenv("DATA_FILE", "/app/data/wiki_recipes.jsonl")
-    index_dir = os.getenv("INDEX_DIR", "/app/index")
+    data_file = "/app/data/index/wiki_recipes.jsonl"
+    index_dir = "/app/index"
 
     if not os.path.exists(data_file):
         print(f"Error: Data file not found: {data_file}")

@@ -4,6 +4,7 @@ import sys
 import lucene
 from java.nio.file import Paths as JavaPaths
 from org.apache.lucene.analysis.standard import StandardAnalyzer
+from org.apache.lucene.document import IntPoint
 from org.apache.lucene.index import DirectoryReader
 from org.apache.lucene.queryparser.classic import QueryParser
 from org.apache.lucene.search import BoostQuery, IndexSearcher
@@ -41,6 +42,18 @@ searcher = None
 analyzer = None
 
 
+class CustomQueryParser(QueryParser):
+    def getRangeQuery(self, field, part1, part2, startInclusive, endInclusive):
+        if field == "prep_time":
+            try:
+                lower = int(part1) if part1 else 0
+                upper = int(part2) if part2 else 2147483647
+                return IntPoint.newRangeQuery(field, lower, upper)
+            except ValueError:
+                pass
+        return super().getRangeQuery(field, part1, part2, startInclusive, endInclusive)
+
+
 # Initialize Lucene searcher
 def init_searcher(index_dir):
     global searcher, analyzer
@@ -68,22 +81,60 @@ def search_recipes(query_text, max_results=10, fields=None):
 
     try:
         from org.apache.lucene.search import BooleanClause, BooleanQuery
+        import re
+
+        time_query = None
+
+        # Check for minute ranges: 10-20min, 10-20 min
+        min_match = re.search(r"(\d+)-(\d+)\s*min", query_text, re.IGNORECASE)
+        if min_match:
+            lower = int(min_match.group(1))
+            upper = int(min_match.group(2))
+            time_query = IntPoint.newRangeQuery("prep_time", lower, upper)
+            # Remove the time part from the text query
+            query_text = re.sub(
+                r"(\d+)-(\d+)\s*min", "", query_text, flags=re.IGNORECASE
+            ).strip()
+
+        # Check for hour ranges: 1-2hr, 1-2 hours
+        if not time_query:
+            hr_match = re.search(
+                r"(\d+)-(\d+)\s*(?:hr|hour|hours)", query_text, re.IGNORECASE
+            )
+            if hr_match:
+                lower = int(hr_match.group(1)) * 60
+                upper = int(hr_match.group(2)) * 60
+                time_query = IntPoint.newRangeQuery("prep_time", lower, upper)
+                # Remove the time part from the text query
+                query_text = re.sub(
+                    r"(\d+)-(\d+)\s*(?:hr|hour|hours)",
+                    "",
+                    query_text,
+                    flags=re.IGNORECASE,
+                ).strip()
 
         builder = BooleanQuery.Builder()
 
-        for field in fields:
-            field_parser = QueryParser(field, analyzer)
-            try:
-                field_query = field_parser.parse(query_text)
-                boost = FIELD_BOOSTS.get(field, 1.0)
+        # Add the time range query if found
+        if time_query:
+            builder.add(time_query, BooleanClause.Occur.MUST)
 
-                if boost != 1.0:
-                    boosted_query = BoostQuery(field_query, boost)
-                    builder.add(boosted_query, BooleanClause.Occur.SHOULD)
-                else:
-                    builder.add(field_query, BooleanClause.Occur.SHOULD)
-            except:
-                pass
+        # Use AND as default operator for all searches
+        if query_text:
+            for field in fields:
+                field_parser = CustomQueryParser(field, analyzer)
+                field_parser.setDefaultOperator(QueryParser.Operator.AND)
+                try:
+                    field_query = field_parser.parse(query_text)
+                    boost = FIELD_BOOSTS.get(field, 1.0)
+
+                    if boost != 1.0:
+                        boosted_query = BoostQuery(field_query, boost)
+                        builder.add(boosted_query, BooleanClause.Occur.SHOULD)
+                    else:
+                        builder.add(field_query, BooleanClause.Occur.SHOULD)
+                except:
+                    pass
 
         query = builder.build()
 

@@ -23,6 +23,9 @@ QUERIES = [
     "quick snack",
     "fish",
     "soup",
+    "pasta 10-20min",
+    "chicken 1-2hr",
+    "soup 30-45 min",
 ]
 
 
@@ -30,7 +33,12 @@ def run_old_search(engine, query):
     try:
         results = engine.search(query, top_k=3, idf_method="robertson")
         return [
-            {"rank": i + 1, "title": r.title, "score": r.score}
+            {
+                "rank": i + 1,
+                "title": r.title,
+                "score": r.score,
+                "prep_time": r.prep_time,
+            }
             for i, r in enumerate(results)
         ]
     except Exception as e:
@@ -45,7 +53,12 @@ def run_new_search(query):
 
         results = results_dict.get("results", [])
         return [
-            {"rank": r["rank"], "title": r["recipe_title"], "score": r["score"]}
+            {
+                "rank": r["rank"],
+                "title": r["recipe_title"],
+                "score": r["score"],
+                "prep_time": r.get("prep_time", ""),
+            }
             for r in results[:3]
         ]
     except Exception as e:
@@ -79,16 +92,19 @@ def main():
             old_row = old_results[i] if i < len(old_results) else {}
             new_row = new_results[i] if i < len(new_results) else {}
 
-            old_str = (
-                f"{old_row.get('rank', '-')}. {old_row.get('title', '---')} ({old_row.get('score', 0):.4f})"
-                if "error" not in old_row
-                else f"Error: {old_row['error']}"
-            )
-            new_str = (
-                f"{new_row.get('rank', '-')}. {new_row.get('title', '---')} ({new_row.get('score', 0):.4f})"
-                if "error" not in new_row
-                else f"Error: {new_row['error']}"
-            )
+            if "error" not in old_row:
+                old_pt = old_row.get("prep_time", "")
+                old_pt_str = f" ({old_pt})" if old_pt else ""
+                old_str = f"{old_row.get('rank', '-')}. {old_row.get('title', '---')}{old_pt_str} ({old_row.get('score', 0):.4f})"
+            else:
+                old_str = f"Error: {old_row['error']}"
+
+            if "error" not in new_row:
+                new_pt = new_row.get("prep_time", "")
+                new_pt_str = f" ({new_pt})" if new_pt else ""
+                new_str = f"{new_row.get('rank', '-')}. {new_row.get('title', '---')}{new_pt_str} ({new_row.get('score', 0):.4f})"
+            else:
+                new_str = f"Error: {new_row['error']}"
 
             table_data.append([old_str, new_str])
 
