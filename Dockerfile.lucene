@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install tabulate
+RUN pip3 install tabulate requests beautifulsoup4 Levenshtein
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

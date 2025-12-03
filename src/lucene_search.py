@@ -168,7 +168,7 @@ def search_recipes(query_text, max_results=10, fields=None):
 
         return {
             "query": query_text,
-            "total_hits": hits.totalHits.value,
+            "total_hits": hits.totalHits.value(),
             "results": results,
         }
 

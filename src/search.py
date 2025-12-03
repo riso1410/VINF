@@ -77,7 +77,7 @@ class RecipeSearchEngine:
     ) -> list[SearchResult]:
         query_terms = self.tokenize(query)
         if not query_terms:
-            return []
+            return [], 0
 
         print(f"Tokenized query terms: {query_terms}")
         candidate_docs: set[str] = set()
@@ -86,7 +86,7 @@ class RecipeSearchEngine:
                 candidate_docs.update(self.inverted_index[term]["postings"].keys())
 
         if not candidate_docs:
-            return []
+            return [], 0
 
         doc_scores: dict[str, float] = {}
         for doc_id in candidate_docs:
@@ -106,7 +106,10 @@ class RecipeSearchEngine:
                 doc_scores[doc_id] = score
 
         if not doc_scores:
-            return []
+            return [], 0
+
+        # Calculate total hits (documents with score > 0)
+        total_hits = len(doc_scores)
 
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[
             :top_k
@@ -129,7 +132,7 @@ class RecipeSearchEngine:
                     )
                 )
 
-        return results
+        return results, total_hits
 
     def display_results(self, results: list[SearchResult], show_details: bool = True):
         if not results:
@@ -208,9 +211,10 @@ def main():
                 print()
                 continue
 
-            results = search_engine.search(
+            results, total_hits = search_engine.search(
                 query, top_k=config.DEFAULT_TOP_K, idf_method=idf_method
             )
+            print(f"\nFound {total_hits} results:\n")
             search_engine.display_results(results)
 
         except KeyboardInterrupt:
