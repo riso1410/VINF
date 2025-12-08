@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import re
 import urllib.parse
 from tabulate import tabulate
 import lucene_search
@@ -180,17 +181,23 @@ def run_foodnetwork_search(query):
             return {
                 "results": [{"error": f"HTTP {response.status_code}"}],
                 "latency": latency,
-                "total_hits": "N/A",
+                "total_hits": 0,
             }
 
         soup = BeautifulSoup(response.content, "html.parser")
 
+        hit_count = 0
+        hit_count_tag = soup.find("h4", attrs={"data-v-45435b46": True})
+        if hit_count_tag:
+            hit_text = hit_count_tag.get_text(strip=True)
+            # Remove parentheses and extract number
+            match = re.search(r'\((\d+)\)', hit_text)
+            if match:
+                hit_count = int(match.group(1))
+
         # Find recipe titles from search results
         recipe_titles = []
 
-        # Updated method based on inspection:
-        # Recipe cards are <a> tags with class "block group"
-        # Title is in an <h3> tag inside
         recipe_cards = soup.find_all("a", class_="block group")
 
         for card in recipe_cards:
@@ -221,10 +228,10 @@ def run_foodnetwork_search(query):
         if not results:
             results = [{"error": "No results found"}]
 
-        return {"results": results, "latency": latency, "total_hits": "N/A"}
+        return {"results": results, "latency": latency, "total_hits": hit_count}
 
     except Exception as e:
-        return {"results": [{"error": str(e)}], "latency": 0, "total_hits": "N/A"}
+        return {"results": [{"error": str(e)}], "latency": 0, "total_hits": 0}
 
 
 def calculate_relevancy_score(all_results, query):
